@@ -3,7 +3,6 @@ import pandas as pd
 from supabase import create_client
 import datetime
 
-# 1. Configuración de Conexión
 url = st.secrets["SUPABASE_URL"]
 key = st.secrets["SUPABASE_KEY"]
 supabase = create_client(url, key)
@@ -1205,10 +1204,9 @@ else:
                     st.bar_chart(df_comp.set_index("Concepto"))
 
             else:
-
-                st.info("Por favor, selecciona la fecha de fin en el calendario.")     
-
- elif menu == "Gestión de Ventas":
+                st.info("Por favor, selecciona la fecha de fin en el calendario.") 
+                
+    elif menu == "Gestión de Ventas":
         st.title("📊 Control Maestro de Ventas")
 
         try:
@@ -1288,4 +1286,3 @@ else:
 
         except Exception as e:
             st.error(f"Error cargando gestión de ventas: {e}")
-
