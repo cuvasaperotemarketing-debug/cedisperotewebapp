@@ -4,8 +4,8 @@ from supabase import create_client
 import datetime
 
 # 1. Configuración de Conexión
-url = "https://lyhgolnqqguinqpqdybe.supabase.co"
-key = "sb_secret_Ffqpjxk5nZxSfEEyv6qcog_G4C3Iapc"
+url = st.secrets["SUPABASE_URL"]
+key = st.secrets["SUPABASE_KEY"]
 supabase = create_client(url, key)
 
 # --- CONFIGURACIÓN DE PÁGINA ---
@@ -1205,4 +1205,5 @@ else:
                     st.bar_chart(df_comp.set_index("Concepto"))
 
             else:
+
                 st.info("Por favor, selecciona la fecha de fin en el calendario.")     
