@@ -1208,83 +1208,84 @@ else:
 
                 st.info("Por favor, selecciona la fecha de fin en el calendario.")     
 
-     elif menu == "Gestión de Ventas":
-            st.title("📊 Control Maestro de Ventas")
-    
-            try:
-                # 1. Traer ventas con info de Clientes
-                res_v = supabase.table("ventas").select("*, Clientes(nombre, telefono)").order("fecha_venta", desc=True).execute()
-                df_v = pd.DataFrame(res_v.data)
-    
-                if not df_v.empty:
-                    # Buscador y Filtro
-                    c1, c2 = st.columns([2,1])
-                    with c1:
-                        busqueda = st.text_input("🔍 Buscar por Cliente o Folio", "").lower()
-                    with c2:
-                        filtro_estatus = st.selectbox("Estado de Pago", ["Todos", "Pagado", "Pendiente"])
-    
-                    # Aplicar filtros manuales
-                    df_v['nombre_cliente'] = df_v['Clientes'].apply(lambda x: x['nombre'] if x else "N/A")
+ elif menu == "Gestión de Ventas":
+        st.title("📊 Control Maestro de Ventas")
+
+        try:
+            # 1. Traer ventas con info de Clientes
+            res_v = supabase.table("ventas").select("*, Clientes(nombre, telefono)").order("fecha_venta", desc=True).execute()
+            df_v = pd.DataFrame(res_v.data)
+
+            if not df_v.empty:
+                # Buscador y Filtro
+                c1, c2 = st.columns([2,1])
+                with c1:
+                    busqueda = st.text_input("🔍 Buscar por Cliente o Folio", "").lower()
+                with c2:
+                    filtro_estatus = st.selectbox("Estado de Pago", ["Todos", "Pagado", "Pendiente"])
+
+                # Aplicar filtros manuales
+                df_v['nombre_cliente'] = df_v['Clientes'].apply(lambda x: x['nombre'] if x else "N/A")
+                
+                if busqueda:
+                    df_v = df_v[df_v['nombre_cliente'].str.lower().contains(busqueda) | df_v['id'].str.contains(busqueda)]
+                
+                if filtro_estatus != "Todos":
+                    df_v = df_v[df_v['estatus_pago'] == filtro_estatus]
+
+                st.divider()
+
+                for _, v in df_v.iterrows():
+                    # Consultar Abonos de esta venta
+                    res_a = supabase.table("abonos").select("monto_abono").eq("venta_id", v['id']).execute()
+                    total_abonado = sum(float(a['monto_abono']) for a in res_a.data)
                     
-                    if busqueda:
-                        df_v = df_v[df_v['nombre_cliente'].str.lower().contains(busqueda) | df_v['id'].str.contains(busqueda)]
+                    monto_total = float(v['monto_total'])
+                    saldo_restante = monto_total - total_abonado
                     
-                    if filtro_estatus != "Todos":
-                        df_v = df_v[df_v['estatus_pago'] == filtro_estatus]
-    
-                    st.divider()
-    
-                    for _, v in df_v.iterrows():
-                        # Consultar Abonos de esta venta
-                        res_a = supabase.table("abonos").select("monto_abono").eq("venta_id", v['id']).execute()
-                        total_abonado = sum(float(a['monto_abono']) for a in res_a.data)
+                    # Definir color de la tarjeta
+                    color_status = "green" if saldo_restante <= 0 else "red"
+                    label_status = "PAGADO" if saldo_restante <= 0 else "PENDIENTE"
+
+                    with st.expander(f"🧾 Folio: {v['id'][:8]} | {v['nombre_cliente']} | :{color_status}[{label_status}]"):
+                        col1, col2 = st.columns([2, 1])
                         
-                        monto_total = float(v['monto_total'])
-                        saldo_restante = monto_total - total_abonado
-                        
-                        # Definir color de la tarjeta
-                        color_status = "green" if saldo_restante <= 0 else "red"
-                        label_status = "PAGADO" if saldo_restante <= 0 else "PENDIENTE"
-    
-                        with st.expander(f"🧾 Folio: {v['id'][:8]} | {v['nombre_cliente']} | :{color_status}[{label_status}]"):
-                            col1, col2 = st.columns([2, 1])
+                        with col1:
+                            st.markdown(f"**📅 Fecha:** {pd.to_datetime(v['fecha_venta']).strftime('%d/%m/%Y %H:%M')}")
+                            st.markdown(f"**📍 Entrega:** {v['lugar_entrega'] or 'No especificada'}")
+                            st.markdown(f"**📞 Teléfono:** {v['Clientes']['telefono'] if v['Clientes'] else 'N/A'}")
                             
-                            with col1:
-                                st.markdown(f"**📅 Fecha:** {pd.to_datetime(v['fecha_venta']).strftime('%d/%m/%Y %H:%M')}")
-                                st.markdown(f"**📍 Entrega:** {v['lugar_entrega'] or 'No especificada'}")
-                                st.markdown(f"**📞 Teléfono:** {v['Clientes']['telefono'] if v['Clientes'] else 'N/A'}")
-                                
-                                # --- DETALLES DE PRODUCTOS ---
-                                st.markdown("---")
-                                st.caption("📦 Productos en esta venta:")
-                                res_det = supabase.table("detalles_venta").select("*").eq("venta_id", v['id']).execute()
-                                if res_det.data:
-                                    df_det = pd.DataFrame(res_det.data)
-                                    # Aquí puedes agregar un join con una tabla de 'productos' si la tienes para ver el nombre
-                                    st.dataframe(df_det[['cantidad', 'precio_unitario', 'subtotal']], use_container_width=True, hide_index=True)
-                                else:
-                                    st.write("No hay detalles registrados.")
-    
-                            with col2:
-                                st.metric("Total Venta", f"${monto_total:,.2f}")
-                                st.metric("Abonado", f"${total_abonado:,.2f}")
-                                st.metric("Saldo Restante", f"${max(0, saldo_restante):,.2f}", delta=-total_abonado, delta_color="inverse")
-                                
-                                if v['evidencia_url']:
-                                    st.link_button("Ver Comprobante 📄", v['evidencia_url'])
-    
-                            # --- HISTORIAL DE ABONOS ---
-                            if res_a.data:
-                                with st.container():
-                                    st.markdown("📋 **Historial de Abonos:**")
-                                    res_h = supabase.table("abonos").select("*, usuarios(nombre_usuario)").eq("venta_id", v['id']).execute()
-                                    df_h = pd.DataFrame(res_h.data)
-                                    df_h['Recibió'] = df_h['usuarios'].apply(lambda x: x['nombre_usuario'] if x else "Sist.")
-                                    st.table(df_h[['fecha_abono', 'monto_abono', 'metodo_pago', 'Recibió']])
-    
-                else:
-                    st.info("No se encontraron ventas.")
-    
-            except Exception as e:
-                st.error(f"Error cargando gestión de ventas: {e}")
+                            # --- DETALLES DE PRODUCTOS ---
+                            st.markdown("---")
+                            st.caption("📦 Productos en esta venta:")
+                            res_det = supabase.table("detalles_venta").select("*").eq("venta_id", v['id']).execute()
+                            if res_det.data:
+                                df_det = pd.DataFrame(res_det.data)
+                                # Aquí puedes agregar un join con una tabla de 'productos' si la tienes para ver el nombre
+                                st.dataframe(df_det[['cantidad', 'precio_unitario', 'subtotal']], use_container_width=True, hide_index=True)
+                            else:
+                                st.write("No hay detalles registrados.")
+
+                        with col2:
+                            st.metric("Total Venta", f"${monto_total:,.2f}")
+                            st.metric("Abonado", f"${total_abonado:,.2f}")
+                            st.metric("Saldo Restante", f"${max(0, saldo_restante):,.2f}", delta=-total_abonado, delta_color="inverse")
+                            
+                            if v['evidencia_url']:
+                                st.link_button("Ver Comprobante 📄", v['evidencia_url'])
+
+                        # --- HISTORIAL DE ABONOS ---
+                        if res_a.data:
+                            with st.container():
+                                st.markdown("📋 **Historial de Abonos:**")
+                                res_h = supabase.table("abonos").select("*, usuarios(nombre_usuario)").eq("venta_id", v['id']).execute()
+                                df_h = pd.DataFrame(res_h.data)
+                                df_h['Recibió'] = df_h['usuarios'].apply(lambda x: x['nombre_usuario'] if x else "Sist.")
+                                st.table(df_h[['fecha_abono', 'monto_abono', 'metodo_pago', 'Recibió']])
+
+            else:
+                st.info("No se encontraron ventas.")
+
+        except Exception as e:
+            st.error(f"Error cargando gestión de ventas: {e}")
+
