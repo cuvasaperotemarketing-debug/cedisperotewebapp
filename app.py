@@ -1322,50 +1322,39 @@ else:
         # Validamos que el usuario haya seleccionado ambas fechas
         if isinstance(rango, (list, tuple)) and len(rango) == 2:
             f_inicio, f_fin = rango
-            # Convertimos a string para la consulta de Supabase (formato ISO)
             f_ini_str = str(f_inicio)
             f_fin_str = str(f_fin)
             
-            # --- CONSULTAS A SUPABASE ---
-            # 1. Ventas
-            q_v = supabase.table("ventas").select("*").gte("fecha_entrega", f_ini_str).lte("fecha_entrega", f_fin_str)
+            # --- CONSULTAS A SUPABASE (ACTUALIZADAS CON RELACIONES) ---
+            # 1. Ventas + Clientes + Sedes
+            q_v = supabase.table("ventas").select("*, Clientes(nombre), sedes(nombre)").gte("fecha_entrega", f_ini_str).lte("fecha_entrega", f_fin_str)
             if sede_sel_nom != "Todas":
                 q_v = q_v.eq("sede_id", dict_sedes[sede_sel_nom])
             res_v = q_v.execute()
             df_v = pd.DataFrame(res_v.data)
 
-            # 2. Gastos Generales (Ajustado a fecha_registro que es la columna estándar en tu DB)
-            q_g = supabase.table("gastos").select("*").gte("fecha_registro", f_ini_str).lte("fecha_registro", f_fin_str)
+            # 2. Gastos + Usuarios
+            q_g = supabase.table("gastos").select("*, usuarios(nombre_usuario)").gte("fecha_registro", f_ini_str).lte("fecha_registro", f_fin_str)
             res_g = q_g.execute()
             df_g = pd.DataFrame(res_g.data)
 
-            # 3. Mantenimiento de Unidades
-            res_m = supabase.table("historial_unidades").select("id, costo_total")\
-                .gte("fecha_ingreso", f_ini_str)\
-                .lte("fecha_ingreso", f_fin_str).execute()
+            # 3. Mantenimiento y Combustible (Se mantienen igual)
+            res_m = supabase.table("historial_unidades").select("id, costo_total").gte("fecha_ingreso", f_ini_str).lte("fecha_ingreso", f_fin_str).execute()
             df_m = pd.DataFrame(res_m.data)
-
-            # 4. Combustible
-            res_gas = supabase.table("combustible_unidades").select("id, costo_total")\
-                .gte("fecha", f_ini_str)\
-                .lte("fecha", f_fin_str).execute()
+            res_gas = supabase.table("combustible_unidades").select("id, costo_total").gte("fecha", f_ini_str).lte("fecha", f_fin_str).execute()
             df_gas = pd.DataFrame(res_gas.data)
 
-            # --- PROCESAMIENTO DE DATOS (LIMPIEZA Y CÁLCULOS) ---
-            # Eliminamos duplicados si existen datos
+            # --- PROCESAMIENTO DE DATOS ---
             if not df_v.empty: df_v = df_v.drop_duplicates(subset=['id'])
             if not df_g.empty: df_g = df_g.drop_duplicates(subset=['id'])
             if not df_m.empty: df_m = df_m.drop_duplicates(subset=['id'])
             if not df_gas.empty: df_gas = df_gas.drop_duplicates(subset=['id'])
 
-            # INGRESOS
             total_ingresos = pd.to_numeric(df_v['monto_total']).sum() if not df_v.empty else 0.0
             total_ventas_count = len(df_v)
             cartera_pendiente = pd.to_numeric(df_v['monto_credito']).sum() if not df_v.empty else 0.0
 
-            # EGRESOS (Evitando duplicidad de Combustible)
             if not df_g.empty:
-                # Sumamos solo gastos que NO sean combustible
                 g_generales = pd.to_numeric(df_g[df_g['tipo_gasto'] != 'Combustible']['monto']).sum()
             else:
                 g_generales = 0.0
@@ -1374,7 +1363,7 @@ else:
             g_gasolina = pd.to_numeric(df_gas['costo_total']).sum() if not df_gas.empty else 0.0
             
             total_egresos = g_generales + g_mantenimiento + g_gasolina
-            utilidad = total_ingresos - total_egresos
+            utilidad = total_ingresos - total_egresos - cartera_pendiente
 
             # --- SCORECARDS ---
             st.divider()
@@ -1399,8 +1388,51 @@ else:
                     "Monto": [total_ingresos,utilidad, total_egresos]
                 })
                 st.bar_chart(df_comp.set_index("Concepto"))
-            else:
-                st.info("No hay datos financieros para mostrar en el gráfico con este filtro.")
+            
+            # --- NUEVA SECCIÓN: TABLAS DETALLADAS EN UNA FILA ---
+            st.divider()
+            st.subheader("📝 Detalle de Operaciones")
+            col_t1, col_t2, col_t3 = st.columns(3)
+
+            with col_t1:
+                st.write("**🛒 Lista de Ventas**")
+                if not df_v.empty:
+                    df_v_tabla = pd.DataFrame([{
+                        "Cliente": v['Clientes']['nombre'] if v.get('Clientes') else "N/A",
+                        "Tienda": v['sedes']['nombre'] if v.get('sedes') else "N/A",
+                        "Fecha": pd.to_datetime(v['fecha_entrega']).strftime('%d/%m/%Y'),
+                        "Monto": f"${float(v['monto_total']):,.2f}"
+                    } for _, v in df_v.iterrows()])
+                    st.dataframe(df_v_tabla, use_container_width=True, hide_index=True)
+                else:
+                    st.caption("Sin ventas en el periodo.")
+
+            with col_t2:
+                st.write("**💳 Cartera Pendiente**")
+                df_p = df_v[df_v['monto_credito'].astype(float) > 0] if not df_v.empty else pd.DataFrame()
+                if not df_p.empty:
+                    df_p_tabla = pd.DataFrame([{
+                        "Cliente": v['Clientes']['nombre'] if v.get('Clientes') else "N/A",
+                        "Fecha Venta": pd.to_datetime(v['fecha_entrega']).strftime('%d/%m/%Y'),
+                        "Deuda": f"${float(v['monto_credito']):,.2f}"
+                    } for _, v in df_p.iterrows()])
+                    st.dataframe(df_p_tabla, use_container_width=True, hide_index=True)
+                else:
+                    st.caption("Sin deudas pendientes.")
+
+            with col_t3:
+                st.write("**📉 Listado de Gastos**")
+                if not df_g.empty:
+                    df_g_tabla = pd.DataFrame([{
+                        "Fecha": pd.to_datetime(g['fecha_registro']).strftime('%d/%m/%Y'),
+                        "Usuario": g['usuarios']['nombre_usuario'] if g.get('usuarios') else "N/A",
+                        "Categoría": g['tipo_gasto'],
+                        "Subcat": g['subcategoria'],
+                        "Monto": f"${float(g['monto']):,.2f}"
+                    } for _, g in df_g.iterrows()])
+                    st.dataframe(df_g_tabla, use_container_width=True, hide_index=True)
+                else:
+                    st.caption("Sin gastos en el periodo.")
 
         else:
             st.info("Por favor, selecciona el rango de fechas completo.")
@@ -1660,4 +1692,3 @@ else:
                 st.table(df_h)
             else:
                 st.info("No hay cambios registrados en el historial.")
-
