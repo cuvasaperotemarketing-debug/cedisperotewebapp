@@ -1552,12 +1552,26 @@ else:
                                     color = "orange" if status == 'pendiente' else "green" if status == 'aprobado' else "red"
                                     st.markdown(f":{color}[{status.upper()}]")
                                 with c_ab3:
-                                    if status == 'pendiente':
-                                        if st.button("Aprobar ✅", key=f"btn_aprobar_{abono['id']}"):
-                                            supabase.table("abonos").update({"estatus_aprobacion": "aprobado", "aprobado_por": st.session_state.get('nombre_usuario', 'Administrador'), "fecha_revision": "now()"}).eq("id", abono['id']).execute()
-                                            st.rerun()
-                                    if abono['evidencia_url']:
-                                        st.link_button("Ver 🖼️", abono['evidencia_url'])
+                                        if status == 'pendiente':
+                                            if st.button("Aprobar ✅", key=f"btn_aprobar_{abono['id']}"):
+                                                # 1. Obtener el monto que vamos a aprobar
+                                                monto_a_restar = float(abono['monto_abono'])
+                                                
+                                                # 2. Actualizar el estatus del abono
+                                                supabase.table("abonos").update({
+                                                    "estatus_aprobacion": "aprobado", 
+                                                    "aprobado_por": st.session_state.get('nombre_usuario', 'Administrador'), 
+                                                    "fecha_revision": "now()"
+                                                }).eq("id", abono['id']).execute()
+                                                
+                                                # 3. ACTUALIZACIÓN CRÍTICA: Restar el monto del crédito de la venta en la DB
+                                                nuevo_credito_db = max(0, float(v['monto_credito']) - monto_a_restar)
+                                                supabase.table("ventas").update({"monto_credito": nuevo_credito_db}).eq("id", v['id']).execute()
+                                                
+                                                st.success(f"Abono aprobado y saldo actualizado.")
+                                                st.rerun()
+                                        if abono['evidencia_url']:
+                                            st.link_button("Ver 🖼️", abono['evidencia_url'])
                             st.divider()
 
             else:
@@ -1692,3 +1706,4 @@ else:
                 st.table(df_h)
             else:
                 st.info("No hay cambios registrados en el historial.")
+
