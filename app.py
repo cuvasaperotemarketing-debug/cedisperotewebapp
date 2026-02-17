@@ -623,100 +623,59 @@ else:
     elif menu == "Registrar Abono":
         st.title("💸 Cobranza CEDIS Perote")
         
-        # 1. Consultamos todas las ventas (eliminamos el filtro .gt para no excluir nulos)
-        res_v = supabase.table("ventas").select("id, monto_total, monto_credito, Clientes(nombre)").execute()
+        # 1. Consultamos ventas con deuda
+        res_v = supabase.table("ventas").select("id, monto_total, monto_credito, Clientes(nombre)").gt("monto_credito", 0).execute()
         
         if res_v.data:
-            # 2. Filtramos manualmente para asegurar que aparezcan las que DEBEN dinero real
-            ventas_con_deuda = []
-            for v in res_v.data:
-                # Calculamos saldo real: Monto Total - Abonos realizados
-                res_a = supabase.table("abonos").select("monto_abono").eq("venta_id", v['id']).execute()
-                total_abonado = sum(float(a['monto_abono']) for a in res_a.data)
+            # Diccionario para identificar la deuda seleccionada
+            dict_d = {f"{v['Clientes']['nombre']} (Saldo Actual: ${v['monto_credito']:,.2f})": v for v in res_v.data}
+            
+            v_s_label = st.selectbox("Seleccionar Deuda Pendiente", list(dict_d.keys()))
+            deuda_seleccionada = dict_d[v_s_label]
+            
+            st.divider()
+            
+            with st.form("f_abono", clear_on_submit=True):
+                c1, c2 = st.columns(2)
                 
-                # Usamos monto_total como base para determinar la deuda actual
-                monto_total = float(v.get('monto_total', 0))
-                pago_inicial = monto_total - float(v.get('monto_credito', monto_total))
-                saldo_actual = monto_total - (pago_inicial + total_abonado)
+                with c1:
+                    ab = st.number_input(
+                        "Monto del Abono ($)", 
+                        min_value=1.0, 
+                        max_value=float(deuda_seleccionada['monto_credito']),
+                        step=100.0
+                    )
+                    forma_pago = st.selectbox(
+                        "Forma de Pago", 
+                        ["Efectivo", "Transferencia", "Tarjeta Débito/Crédito", "Depósito Bancario"]
+                    )
                 
-                if saldo_actual > 0:
-                    # Actualizamos el valor de monto_credito temporalmente para que tu formulario funcione igual
-                    v['monto_credito'] = saldo_actual
-                    ventas_con_deuda.append(v)
+                with c2:
+                    evid_abono = st.file_uploader("Comprobante del Abono", type=["jpg", "png", "jpeg", "pdf"])
+                    referencia = st.text_input("Referencia / Notas (Opcional)")
 
-            if ventas_con_deuda:
-                # Diccionario para identificar la deuda seleccionada
-                dict_d = {f"{v['Clientes']['nombre']} (Saldo Actual: ${v['monto_credito']:,.2f})": v for v in ventas_con_deuda}
-                
-                # Selector fuera del form para reactividad
-                v_s_label = st.selectbox("Seleccionar Deuda Pendiente", list(dict_d.keys()))
-                deuda_seleccionada = dict_d[v_s_label]
-                
-                st.divider()
-                
-                with st.form("f_abono", clear_on_submit=True):
-                    c1, c2 = st.columns(2)
+                if st.form_submit_button("✅ Enviar para Revisión"):
+                    url_evidencia = subir_archivo(evid_abono, "evidencias", "abonos") if evid_abono else None
                     
-                    with c1:
-                        ab = st.number_input(
-                            "Monto del Abono ($)", 
-                            min_value=1.0, 
-                            max_value=float(deuda_seleccionada['monto_credito']),
-                            step=100.0
-                        )
-                        forma_pago = st.selectbox(
-                            "Forma de Pago", 
-                            ["Efectivo", "Transferencia", "Tarjeta Débito/Crédito", "Depósito Bancario"]
-                        )
+                    # Insertar el abono con estatus PENDIENTE (por defecto en DB o explícito aquí)
+                    nuevo_abono = {
+                        "venta_id": deuda_seleccionada['id'],
+                        "vendedor_id": st.session_state.usuario_id,
+                        "monto_abono": ab,
+                        "forma_pago": forma_pago,
+                        "evidencia_url": url_evidencia,
+                        "referencia": referencia,
+                        "estatus_aprobacion": "pendiente" # IMPORTANTE
+                    }
                     
-                    with c2:
-                        evid_abono = st.file_uploader("Comprobante del Abono", type=["jpg", "png", "jpeg", "pdf"])
-                        referencia = st.text_input("Referencia / Notas (Opcional)")
-
-                    if st.form_submit_button("✅ Registrar Cobro"):
-                        # 1. La función ahora devuelve directamente la URL pública si tiene éxito
-                        url_evidencia = subir_archivo(evid_abono, "evidencias", "abonos") if evid_abono else None
+                    try:
+                        # REGISTRAMOS EL ABONO PERO NO TOCAMOS LA TABLA VENTAS AQUÍ
+                        supabase.table("abonos").insert(nuevo_abono).execute()
                         
-                        # 2. Insertar el registro del abono
-                        nuevo_abono = {
-                            "venta_id": deuda_seleccionada['id'],
-                            "vendedor_id": st.session_state.usuario_id,
-                            "monto_abono": ab,
-                            "forma_pago": forma_pago,
-                            "evidencia_url": url_evidencia, # Se guardará como texto (https://...)
-                            "referencia": referencia
-                        }
-                        
-                        # 2. Insertar el registro del abono
-                        nuevo_abono = {
-                            "venta_id": deuda_seleccionada['id'],
-                            "vendedor_id": st.session_state.usuario_id,
-                            "monto_abono": ab,
-                            "forma_pago": forma_pago,
-                            "evidencia_url": url_evidencia,
-                            "referencia": referencia
-                        }
-                        
-                        try:
-                            # Registrar abono
-                            supabase.table("abonos").insert(nuevo_abono).execute()
-                            
-                            # Actualizar el saldo pendiente en la tabla de ventas
-                            # Nota: nuevo_saldo se calcula sobre la deuda actual calculada
-                            nuevo_saldo = deuda_seleccionada['monto_credito'] - ab
-                            update_data = {"monto_credito": nuevo_saldo}
-                            
-                            if nuevo_saldo <= 0:
-                                update_data["estatus_pago"] = "pagado"
-                                
-                            supabase.table("ventas").update(update_data).eq("id", deuda_seleccionada['id']).execute()
-                            
-                            st.success(f"Abono de ${ab} registrado con éxito para {deuda_seleccionada['Clientes']['nombre']}")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error al registrar abono: {e}")
-            else:
-                st.info("No hay deudas pendientes por cobrar actualmente.")
+                        st.warning(f"Abono de ${ab} registrado. Aparecerá en el saldo una vez que el administrador lo apruebe.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al registrar abono: {e}")
         else:
             st.info("No hay deudas pendientes por cobrar actualmente.")
 
@@ -1448,22 +1407,15 @@ else:
             if not df_v.empty:
                 # --- PRE-CÁLCULO DE ESTATUS REAL ---
                 def calcular_estatus_real(row):
-                    monto_total = float(row['monto_total'])
-                    pago_inicial = monto_total - float(row.get('monto_credito', monto_total))
+                    # El saldo real es DIRECTAMENTE lo que dice la columna monto_credito
+                    saldo_restante = float(row.get('monto_credito', 0))
                     
-                    # Traemos todos los abonos de esta venta para verificar estatus y montos
-                    res_a = supabase.table("abonos").select("monto_abono, estatus_aprobacion").eq("venta_id", row['id']).execute()
+                    # Traemos abonos para verificar si hay alguno pendiente de aprobar
+                    res_a = supabase.table("abonos").select("estatus_aprobacion").eq("venta_id", row['id']).execute()
                     abonos_data = res_a.data
-                    
-                    # Sumamos solo los que ya están aprobados
-                    total_abonos_aprobados = sum(float(a['monto_abono']) for a in abonos_data if a['estatus_aprobacion'] == "aprobado")
-                    
-                    # Verificamos si existe CUALQUIER abono que aún esté pendiente
                     tiene_pendientes = any(a['estatus_aprobacion'] == "pendiente" for a in abonos_data)
                     
-                    saldo_restante = monto_total - (pago_inicial + total_abonos_aprobados)
-                    
-                    # Condición: El saldo debe ser 0 Y no debe haber abonos pendientes de revisar
+                    # Una venta está PAGADA solo si el saldo es 0 Y no hay abonos pendientes de validar
                     if saldo_restante <= 0 and not tiene_pendientes:
                         return "Pagado"
                     else:
@@ -1496,12 +1448,13 @@ else:
                 # --- RENDERIZADO DE VENTAS FILTRADAS ---
                 for _, v in df_filtrado.iterrows():
                     monto_total = float(v['monto_total'])
-                    pago_inicial = monto_total - float(v.get('monto_credito', monto_total))
+                    saldo_actual_db = float(v.get('monto_credito', 0))
                     
+                    # Consultamos abonos
                     res_a = supabase.table("abonos").select("*, usuarios(nombre_usuario)").eq("venta_id", v['id']).order("fecha_abono", desc=True).execute()
                     
-                    total_abonado_aprobado = pago_inicial + sum(float(a['monto_abono']) for a in res_a.data if a['estatus_aprobacion'] == 'aprobado')
-                    saldo_restante = monto_total - total_abonado_aprobado
+                    # Cálculo visual: Lo abonado es Total - Saldo Actual
+                    total_abonado_real = monto_total - saldo_actual_db
                     
                     color_status = "green" if v['estatus_real'] == "Pagado" else "red"
                     label_status = v['estatus_real'].upper()
@@ -1533,14 +1486,13 @@ else:
 
                         with col2:
                             st.metric("Total Venta", f"${monto_total:,.2f}")
-                            st.metric("Abonado (Aprobado)", f"${total_abonado_aprobado:,.2f}")
-                            # Si el saldo es 0 pero hay pendientes, mostramos un aviso visual en el saldo
-                            st.metric("Saldo Restante", f"${max(0, saldo_restante):,.2f}", delta=-total_abonado_aprobado, delta_color="inverse")
+                            st.metric("Total Abonado", f"${total_abonado_real:,.2f}")
+                            st.metric("Saldo Pendiente", f"${max(0.0, saldo_actual_db):,.2f}", delta_color="inverse")
                             
                             if v['evidencia_url']:
                                 st.link_button("Ver Comprobante Venta 📄", v['evidencia_url'])
 
-                        if res_a.data or pago_inicial > 0:
+                        if res_a.data:
                             st.markdown("📋 **Historial de Abonos:**")
                             for abono in res_a.data:
                                 c_ab1, c_ab2, c_ab3 = st.columns([3, 2, 2])
@@ -1552,26 +1504,17 @@ else:
                                     color = "orange" if status == 'pendiente' else "green" if status == 'aprobado' else "red"
                                     st.markdown(f":{color}[{status.upper()}]")
                                 with c_ab3:
-                                        if status == 'pendiente':
-                                            if st.button("Aprobar ✅", key=f"btn_aprobar_{abono['id']}"):
-                                                # 1. Obtener el monto que vamos a aprobar
-                                                monto_a_restar = float(abono['monto_abono'])
-                                                
-                                                # 2. Actualizar el estatus del abono
-                                                supabase.table("abonos").update({
-                                                    "estatus_aprobacion": "aprobado", 
-                                                    "aprobado_por": st.session_state.get('nombre_usuario', 'Administrador'), 
-                                                    "fecha_revision": "now()"
-                                                }).eq("id", abono['id']).execute()
-                                                
-                                                # 3. ACTUALIZACIÓN CRÍTICA: Restar el monto del crédito de la venta en la DB
-                                                nuevo_credito_db = max(0, float(v['monto_credito']) - monto_a_restar)
-                                                supabase.table("ventas").update({"monto_credito": nuevo_credito_db}).eq("id", v['id']).execute()
-                                                
-                                                st.success(f"Abono aprobado y saldo actualizado.")
-                                                st.rerun()
-                                        if abono['evidencia_url']:
-                                            st.link_button("Ver 🖼️", abono['evidencia_url'])
+                                    if status == 'pendiente':
+                                        if st.button("Aprobar ✅", key=f"btn_aprobar_{abono['id']}"):
+                                            monto_a_restar = float(abono['monto_abono'])
+                                            # 1. Aprobar abono
+                                            supabase.table("abonos").update({"estatus_aprobacion": "aprobado", "aprobado_por": st.session_state.get('nombre_usuario', 'Admin'), "fecha_revision": "now()"}).eq("id", abono['id']).execute()
+                                            # 2. Restar del saldo de la venta
+                                            nuevo_saldo = max(0.0, saldo_actual_db - monto_a_restar)
+                                            supabase.table("ventas").update({"monto_credito": nuevo_saldo}).eq("id", v['id']).execute()
+                                            st.rerun()
+                                    if abono['evidencia_url']:
+                                        st.link_button("Ver 🖼️", abono['evidencia_url'])
                             st.divider()
 
             else:
@@ -1706,4 +1649,5 @@ else:
                 st.table(df_h)
             else:
                 st.info("No hay cambios registrados en el historial.")
+
 
