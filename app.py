@@ -2,9 +2,19 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client
 import datetime
+from fpdf import FPDF
+import urllib.parse
 
 url = st.secrets["SUPABASE_URL"]
 key = st.secrets["SUPABASE_KEY"]
+supabase = create_client(url, key)
+
+# 1. Configuración de Conexión
+url = "https://lyhgolnqqguinqpqdybe.supabase.co"
+key = "sb_secret_Ffqpjxk5nZxSfEEyv6qcog_G4C3Iapc"
+
+# url = st.secrets["SUPABASE_URL"]
+# key = st.secrets["SUPABASE_KEY"]
 supabase = create_client(url, key)
 
 # --- CONFIGURACIÓN DE PÁGINA ---
@@ -159,17 +169,18 @@ else:
 # --- PÁGINA: INVENTARIO ---
     elif menu == "Inventario":
         st.title("📦 Almacén CEDIS Perote")
-        tab1, tab2, tab3 = st.tabs(["📋 Stock Actual", "➕ Nuevo Producto", "🕒 Historial de Movimientos"])
+        # Agregamos la cuarta pestaña "Editar Producto"
+        tab1, tab2, tab3, tab4 = st.tabs(["📋 Stock Actual", "➕ Nuevo Producto", "🕒 Historial", "✏️ Editar Producto"])
 
-        # Consultas base para sedes
         res_sedes = supabase.table("sedes").select("id, nombre").execute()
         dict_sedes = {s['nombre']: s['id'] for s in res_sedes.data}
 
-        # PESTAÑA 1: VISUALIZACIÓN Y REABASTECIMIENTO
         with tab1:
             st.subheader("Consulta de Existencias")
-            # NUEVO: Filtro por ubicación para el Stock
-            sede_filtro_nom = st.selectbox("📍 Filtrar por Ubicación/Sede", ["Todas"] + list(dict_sedes.keys()))
+            c1, c2 = st.columns(2)
+            sede_filtro_nom = c1.selectbox("📍 Filtrar por Ubicación", ["Todas"] + list(dict_sedes.keys()))
+            # BUSCADOR POR NOMBRE
+            busqueda_p = c2.text_input("🔍 Buscar por nombre de producto", "").lower()
             
             query = supabase.table("inventario").select("*, sedes(nombre)").order("nombre_producto")
             if sede_filtro_nom != "Todas":
@@ -178,112 +189,141 @@ else:
             res_i = query.execute()
 
             if res_i.data:
-                for p in res_i.data:
+                # Filtrar por buscador
+                productos_filtrados = [p for p in res_i.data if busqueda_p in p['nombre_producto'].lower()]
+                
+                for p in productos_filtrados:
                     sede_p = p['sedes']['nombre'] if p.get('sedes') else "Sin asignar"
-                    with st.expander(f"🛒 {p['nombre_producto']} | Ubicación: {sede_p} | Cantidad: {p['stock_actual']}"):
+                    label_granel = " (Granel)" if p.get('es_granel') else ""
+                    with st.expander(f"🛒 {p['nombre_producto']} | {p['stock_actual']} {p.get('unidad_medida', 'unidades')} | {sede_p}{label_granel}"):
                         c1, c2 = st.columns([1, 2])
                         with c1: 
                             if p['foto_url']: st.image(p['foto_url'], width=150)
                             else: st.info("Sin imagen")
                         with c2:
-                            st.write(f"**Precio:** ${p['precio_unitario']}")
+                            st.write(f"**Precio Venta:** ${p['precio_unitario']} | **Costo Compra:** ${p.get('precio_compra', 0)}")
+                            if p.get('es_granel'):
+                                st.write(f"**Costo Tonelada:** ${p.get('costo_tonelada', 0):,.2f}")
+                            
                             with st.form(key=f"f_stock_{p['id']}"):
-                                add = st.number_input("Cantidad que entra al almacén", min_value=0, step=1)
+                                add = st.number_input(f"Cantidad en {p.get('unidad_medida', 'unidades')}", min_value=0.0, step=0.1 if p.get('es_granel') else 1.0)
                                 if st.form_submit_button("Actualizar Stock"):
                                     if add > 0:
-                                        nuevo_total = p['stock_actual'] + add
+                                        nuevo_total = float(p['stock_actual']) + float(add)
                                         supabase.table("inventario").update({"stock_actual": nuevo_total}).eq("id", p['id']).execute()
-                                        
                                         supabase.table("historial_inventario").insert({
-                                            "producto_id": p['id'], 
-                                            "usuario_id": st.session_state.usuario_id, 
-                                            "cantidad_añadida": add,
-                                            "sede_id": p['sede_id'] # Mantiene la relación de sede en el historial
+                                            "producto_id": p['id'], "usuario_id": st.session_state.usuario_id, 
+                                            "cantidad_añadida": add, "sede_id": p['sede_id']
                                         }).execute()
-                                        st.success(f"Se añadieron {add} unidades")
+                                        st.success("Stock actualizado")
                                         st.rerun()
             else:
-                st.info("No hay productos registrados en esta ubicación.")
+                st.info("No hay productos registrados.")
 
-        # PESTAÑA 2: FORMULARIO DE NUEVO PRODUCTO
         with tab2:
-            st.subheader("Registrar nuevo material en el catálogo")
+            st.subheader("Registrar nuevo material")
             with st.form("form_nuevo_producto", clear_on_submit=True):
                 nombre_p = st.text_input("Nombre del Producto")
-                # NUEVO: Selección de sede obligatoria para el nuevo producto
                 sede_p_nom = st.selectbox("Asignar a Sede/Ubicación", list(dict_sedes.keys()))
                 desc_p = st.text_area("Descripción corta")
                 
-                c_p1, c_p2 = st.columns(2)
-                precio_p = c_p1.number_input("Precio de Venta Unitario", min_value=0.0, step=0.5)
-                stock_p = c_p2.number_input("Stock Inicial", min_value=0, step=1)
+                c1, c2, c3 = st.columns(3)
+                unidad_p = c1.selectbox("Unidad de Medida", ["Pza", "Kg", "Bulto", "M3", "Tramo"])
+                es_granel = c2.checkbox("¿Es producto a granel?")
+                costo_ton = c3.number_input("Costo por Tonelada", min_value=0.0)
                 
-                foto_p = st.file_uploader("Subir foto del producto", type=["jpg", "png", "jpeg"])
+                c_p1, c_p2, c_p3 = st.columns(3)
+                precio_p = c_p1.number_input("Precio Venta", min_value=0.0)
+                # NUEVA COLUMNA PRECIO_COMPRA
+                costo_p = c_p2.number_input("Precio Compra (Costo)", min_value=0.0)
+                stock_p = c_p3.number_input("Stock Inicial", min_value=0.0)
+                
+                foto_p = st.file_uploader("Subir foto", type=["jpg", "png", "jpeg"])
                 
                 if st.form_submit_button("Guardar Producto"):
                     if nombre_p:
                         url_foto = subir_archivo(foto_p, "evidencias", "productos") if foto_p else None
-                        
                         nuevo_prod = {
-                            "nombre_producto": nombre_p,
-                            "sede_id": dict_sedes[sede_p_nom], # Guardamos el ID de la sede
-                            "descripcion": desc_p,
-                            "precio_unitario": precio_p,
-                            "stock_actual": stock_p,
-                            "foto_url": url_foto
+                            "nombre_producto": nombre_p, "sede_id": dict_sedes[sede_p_nom],
+                            "descripcion": desc_p, "precio_unitario": float(precio_p),
+                            "precio_compra": float(costo_p), "stock_actual": float(stock_p),
+                            "foto_url": url_foto, "unidad_medida": unidad_p,
+                            "es_granel": es_granel, "costo_tonelada": float(costo_ton) if es_granel else 0.0
                         }
-                        try:
-                            supabase.table("inventario").insert(nuevo_prod).execute()
-                            st.success(f"✅ {nombre_p} agregado a {sede_p_nom}")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error al guardar: {e}")
-                    else:
-                        st.warning("El nombre del producto es obligatorio.")
+                        supabase.table("inventario").insert(nuevo_prod).execute()
+                        st.success("Guardado")
+                        st.rerun()
 
-        # PESTAÑA 3: HISTORIAL DE ENTRADAS
         with tab3:
             st.subheader("🕒 Log de Reabastecimientos")
-            # NUEVO: Filtro de historial por sede
-            sede_hist_nom = st.selectbox("Filtrar Historial por Sede", ["Todas"] + list(dict_sedes.keys()), key="h_sede")
+            c1, c2 = st.columns(2)
+            sede_h = c1.selectbox("Filtrar por Sede", ["Todas"] + list(dict_sedes.keys()), key="h_sede")
+            busqueda_h = c2.text_input("🔍 Buscar producto en historial", "")
+
+            res_h = supabase.table("historial_inventario").select("*, inventario(nombre_producto, sede_id), usuarios(nombre_usuario), sedes(nombre)").order("fecha_movimiento", desc=True).execute()
             
-            try:
-                query_h = supabase.table("historial_inventario")\
-                    .select("fecha_movimiento, cantidad_añadida, inventario(nombre_producto, sede_id), usuarios(nombre_usuario), sedes(nombre)")
+            if res_h.data:
+                datos_tabla = []
+                for h in res_h.data:
+                    nom_sede = h['sedes']['nombre'] if h.get('sedes') else "N/A"
+                    nom_prod = h['inventario']['nombre_producto'] if h.get('inventario') else "N/A"
+                    if (sede_h == "Todas" or nom_sede == sede_h) and (busqueda_h.lower() in nom_prod.lower()):
+                        datos_tabla.append({
+                            "Fecha": pd.to_datetime(h['fecha_movimiento']).strftime('%d/%m/%Y %H:%M'),
+                            "Producto": nom_prod, "Sede": nom_sede,
+                            "Cantidad": h['cantidad_añadida'], "Encargado": h['usuarios']['nombre_usuario']
+                        })
+                st.dataframe(pd.DataFrame(datos_tabla), use_container_width=True, hide_index=True)
+
+        with tab4:
+            st.subheader("✏️ Modificar Detalles del Producto")
+            sede_edit_nom = st.selectbox("1. Seleccionar Sede", list(dict_sedes.keys()), key="edit_sede_sel")
+            
+            res_edit = supabase.table("inventario").select("*").eq("sede_id", dict_sedes[sede_edit_nom]).order("nombre_producto").execute()
+            
+            if res_edit.data:
+                dict_edit = {p['nombre_producto']: p for p in res_edit.data}
+                # Buscador interno para el selectbox
+                busqueda_edit = st.text_input("🔍 Buscar producto para editar", "")
+                opciones_edit = [n for n in dict_edit.keys() if busqueda_edit.lower() in n.lower()]
                 
-                # Si se selecciona una sede, filtramos (necesitas que historial_inventario tenga sede_id o filtrar por la relación)
-                res_h = query_h.order("fecha_movimiento", desc=True).execute()
-                
-                if res_h.data:
-                    datos_tabla = []
-                    for h in res_h.data:
-                        # Filtrado manual si la sede está seleccionada
-                        nombre_sede_h = h['sedes']['nombre'] if h.get('sedes') else "N/A"
-                        
-                        if sede_hist_nom == "Todas" or nombre_sede_h == sede_hist_nom:
-                            datos_tabla.append({
-                                "Fecha": pd.to_datetime(h['fecha_movimiento']).strftime('%d/%m/%Y %H:%M'),
-                                "Producto": h['inventario']['nombre_producto'],
-                                "Sede": nombre_sede_h,
-                                "Cantidad": h['cantidad_añadida'],
-                                "Encargado": h['usuarios']['nombre_usuario']
-                            })
+                if opciones_edit:
+                    p_edit_nom = st.selectbox("2. Seleccionar Producto", opciones_edit)
+                    p_data = dict_edit[p_edit_nom]
                     
-                    if datos_tabla:
-                        st.dataframe(pd.DataFrame(datos_tabla), use_container_width=True, hide_index=True)
-                    else:
-                        st.info("No hay movimientos para la sede seleccionada.")
+                    with st.form("form_edit_prod"):
+                        new_nom = st.text_input("Nombre", value=p_data['nombre_producto'])
+                        new_desc = st.text_area("Descripción", value=p_data.get('descripcion', ''))
+                        
+                        col_e1, col_e2, col_e3 = st.columns(3)
+                        new_precio = col_e1.number_input("Precio Venta", value=float(p_data['precio_unitario']))
+                        new_costo = col_e2.number_input("Precio Compra", value=float(p_data.get('precio_compra', 0)))
+                        new_unidad = col_e3.selectbox("Unidad", ["Pza", "Kg", "Bulto", "M3", "Tramo"], index=["Pza", "Kg", "Bulto", "M3", "Tramo"].index(p_data.get('unidad_medida', 'Pza')))
+                        
+                        col_e4, col_e5 = st.columns(2)
+                        new_granel = col_e4.checkbox("Es granel", value=p_data.get('es_granel', False))
+                        new_costo_ton = col_e5.number_input("Costo Tonelada", value=float(p_data.get('costo_tonelada', 0)))
+
+                        if st.form_submit_button("Actualizar Información"):
+                            upd = {
+                                "nombre_producto": new_nom, "descripcion": new_desc,
+                                "precio_unitario": new_precio, "precio_compra": new_costo,
+                                "unidad_medida": new_unidad, "es_granel": new_granel,
+                                "costo_tonelada": new_costo_ton
+                            }
+                            supabase.table("inventario").update(upd).eq("id", p_data['id']).execute()
+                            st.success("Producto actualizado correctamente")
+                            st.rerun()
                 else:
-                    st.info("Aún no hay movimientos registrados.")
-            except Exception as e:
-                st.error(f"Error al cargar el historial: {e}")
+                    st.warning("No se encontraron productos con ese nombre.")
+            else:
+                st.info("No hay productos en esta sede.")
 
 # --- PÁGINA: NUEVA VENTA (CON DESCUENTOS Y DIRECCIÓN DETALLADA) ---
     elif menu == "Nueva Venta":
         st.title("🛒 Nueva Orden de Venta")
         
         # --- PASO 0: SELECCIÓN DE SEDE ORIGEN ---
-        # Esto filtra todo el proceso
         res_sedes = supabase.table("sedes").select("id, nombre").eq("estatus", "Activa").execute()
         dict_sedes = {s['nombre']: s['id'] for s in res_sedes.data}
         
@@ -295,12 +335,14 @@ else:
         
         with col_selec:
             st.subheader("1. Selección de Materiales")
-            # FILTRO: Solo productos de la sede seleccionada con stock > 0
-            res_inv = supabase.table("inventario").select("*").eq("sede_id", sede_id_seleccionada).gt("stock_actual", 0).execute()
+            res_inv = supabase.table("inventario").select("*")\
+                .eq("sede_id", sede_id_seleccionada)\
+                .or_("stock_actual.gt.0,es_granel.eq.true")\
+                .execute()
             
             if res_inv.data:
                 dict_inv = {
-                    f"{i['nombre_producto']} (Stock: {i['stock_actual']})": i 
+                    f"{i['nombre_producto']} (Stock: {i['stock_actual']} {i.get('unidad_medida', 'Pza')})": i 
                     for i in res_inv.data
                 }
                 
@@ -308,44 +350,54 @@ else:
                 p_sel_label = st.selectbox("Producto/Material", opciones_prod)
                 item_seleccionado = dict_inv[p_sel_label]
                 
+                es_granel = item_seleccionado.get('es_granel', False)
+                unidad = item_seleccionado.get('unidad_medida', 'Pza')
+                precio_lista = float(item_seleccionado['precio_unitario'])
+
                 c_input1, c_input2 = st.columns(2)
                 with c_input1:
-                    c_sel = st.number_input(
-                        "Cantidad", 
-                        min_value=1, 
-                        max_value=int(item_seleccionado['stock_actual']), 
-                        value=1
-                    )
+                    if es_granel:
+                        c_sel = st.number_input(f"Cantidad en {unidad}", min_value=0.01, value=1.0, step=0.1)
+                    else:
+                        c_sel = st.number_input(f"Cantidad ({unidad})", min_value=1, max_value=int(item_seleccionado['stock_actual']), value=1)
+                
                 with c_input2:
-                    desc_sel = st.number_input("Descuento Total ($)", min_value=0.0, value=0.0, step=10.0)
+                    precio_venta_final = st.number_input(f"Precio por {unidad} ($)", min_value=0.0, value=precio_lista, step=10.0)
                 
-                precio_bruto = item_seleccionado['precio_unitario'] * c_sel
-                subtotal_item = precio_bruto - desc_sel
+                diferencia_unitario = precio_lista - precio_venta_final
+                desc_total_auto = diferencia_unitario * float(c_sel) if diferencia_unitario > 0 else 0.0
                 
-                if desc_sel > 0:
-                    st.caption(f"Precio Original: ${precio_bruto:,.2f} | Descuento: -${desc_sel:,.2f}")
-                    st.write(f"**Subtotal Final: :green[${subtotal_item:,.2f}]**")
+                precio_bruto = precio_lista * float(c_sel)
+                subtotal_item = precio_venta_final * float(c_sel)
+                
+                if diferencia_unitario > 0:
+                    st.caption(f"Precio Original: ${precio_bruto:,.2f} | Descuento: -${desc_total_auto:,.2f}")
+                
+                st.write(f"**Subtotal Final: :green[${subtotal_item:,.2f}]**")
                 
                 if st.button("➕ Añadir a la Orden"):
                     if subtotal_item >= 0:
                         st.session_state.carrito.append({
                             "id": item_seleccionado['id'], 
                             "nombre": item_seleccionado['nombre_producto'], 
-                            "precio_base": item_seleccionado['precio_unitario'], 
+                            "precio_base": precio_lista,
                             "cantidad": c_sel, 
-                            "descuento": desc_sel,
+                            "descuento": desc_total_auto,
                             "subtotal": subtotal_item,
-                            "sede_id": sede_id_seleccionada # Guardamos referencia en el carrito
+                            "sede_id": sede_id_seleccionada,
+                            "unidad": unidad
                         })
                         st.toast(f"Añadido: {item_seleccionado['nombre_producto']}")
             else:
-                st.warning("⚠️ No hay productos con stock en esta ubicación.")
+                st.warning("⚠️ No hay productos disponibles en esta ubicación.")
 
         with col_resumen:
             st.subheader("2. Resumen de la Orden")
             if st.session_state.carrito:
                 df_car = pd.DataFrame(st.session_state.carrito)
-                st.table(df_car[["nombre", "cantidad", "subtotal"]])
+                df_car['Cant. Detalle'] = df_car.apply(lambda x: f"{x['cantidad']} {x['unidad']}", axis=1)
+                st.table(df_car[["nombre", "Cant. Detalle", "subtotal"]])
+                
                 subtotal_productos = df_car['subtotal'].sum()
                 if st.button("🗑️ Limpiar Orden"):
                     st.session_state.carrito = []
@@ -373,13 +425,12 @@ else:
         
         with c2:
             st.markdown("##### 📍 Dirección Detallada")
+            # NUEVO: Campo de Número de Remisión
+            n_remision = st.number_input("N° de Remisión (Foliado Nota)", min_value=0, step=1, value=0)
             calle = st.text_input("Calle y Número")
             colonia = st.text_input("Colonia")
-            # REINTEGRADOS: Campos editables con valores por defecto
             municipio = st.text_input("Municipio/Delegación", value="Perote")
             estado = st.text_input("Estado", value="Veracruz")
-            
-            # Unimos la dirección completa dinámicamente
             lug_e_completo = f"{calle}, {colonia}, {municipio}, {estado}"
         
         with c3:
@@ -408,215 +459,467 @@ else:
 
                 url_e = subir_archivo(evid, "evidencias", "ventas") if evid else None
                 
-                # INSERT VENTA (Incluyendo la SEDE)
                 v_ins = {
                     "cliente_id": target_id, 
                     "vendedor_id": st.session_state.usuario_id, 
-                    "sede_id": sede_id_seleccionada, # REGISTRAMOS LA SEDE ORIGEN
+                    "sede_id": sede_id_seleccionada,
                     "monto_total": total_v, 
                     "monto_credito": credito, 
                     "evidencia_url": url_e, 
                     "fecha_entrega": str(fec_e), 
                     "lugar_entrega": lug_e_completo, 
                     "cargos_adicionales": {"flete": flete, "maniobra": maniobra}, 
-                    "estatus_pago": "pagado" if credito <= 0 else "pendiente"
+                    "estatus_pago": "pagado" if credito <= 0 else "pendiente",
+                    "num_remision": n_remision # GUARDAMOS EL NUEVO DATO
                 }
                 rv = supabase.table("ventas").insert(v_ins).execute()
                 id_v = rv.data[0]['id']
                 
                 for art in st.session_state.carrito:
-                    # Insertar detalles
                     supabase.table("detalles_venta").insert({
                         "venta_id": id_v, "producto_id": art['id'], 
                         "cantidad": art['cantidad'], "precio_unitario": art['precio_base'], 
                         "descuento_aplicado": art['descuento'], "subtotal": art['subtotal']
                     }).execute()
                     
-                    # Descontar stock (específico de esa sede)
-                    s_act = supabase.table("inventario").select("stock_actual").eq("id", art['id']).single().execute().data['stock_actual']
-                    supabase.table("inventario").update({"stock_actual": s_act - art['cantidad']}).eq("id", art['id']).execute()
+                    s_act = float(supabase.table("inventario").select("stock_actual").eq("id", art['id']).single().execute().data['stock_actual'])
+                    supabase.table("inventario").update({"stock_actual": s_act - float(art['cantidad'])}).eq("id", art['id']).execute()
                 
-                st.success(f"¡Venta registrada desde {sede_venta_nom}!")
+                st.success(f"¡Venta registrada con remisión N° {n_remision}!")
                 st.session_state.carrito = []
                 st.rerun()
+                
+    elif menu == "Logística y Envíos":
+        st.title("🚚 Control de Entregas - CEDIS Perote")
+        
+        # --- BUSCADOR UNIVERSAL ---
+        st.markdown("### 🔍 Buscador de Salidas")
+        busqueda_global = st.text_input("Filtrar por Cliente, Remisión o Sede", placeholder="Ej: Anuar").strip().lower()
+        
+        tab_pend, tab_hist = st.tabs(["📦 Envíos Pendientes", "📜 Historial de Rutas"])
 
+        # 1. Datos iniciales
+        res_envios_finalizados = supabase.table("envios").select("venta_id").in_("estatus", ["terminado", "cancelado", "devuelto"]).execute()
+        ids_excluir = [e['venta_id'] for e in res_envios_finalizados.data]
+        res_v_raw = supabase.table("ventas").select("*, Clientes(*), sedes(*)").order("fecha_entrega").execute()
+        
+        ventas_pendientes = []
+        for v in res_v_raw.data:
+            if v['id'] not in ids_excluir:
+                cumple = True
+                if busqueda_global:
+                    txt = f"{v.get('num_remision','')} {v['Clientes']['nombre']} {v['sedes']['nombre'] if v['sedes'] else ''}".lower()
+                    if busqueda_global not in txt: cumple = False
+                if cumple: ventas_pendientes.append(v)
+
+        res_unid = supabase.table("unidades").select("*").eq("estado", "activo").execute()
+        res_oper = supabase.table("usuarios").select("id, nombre_usuario").execute()
+        res_todas_sedes = supabase.table("sedes").select("*").execute()
+        
+        u_opts = {f"{u['nombre_unidad']} ({u['placas']})": u['id'] for u in res_unid.data}
+        oper_opts = {o['nombre_usuario']: o['id'] for o in res_oper.data}
+        dict_sedes_regreso = {s['nombre']: s.get('direccion') or s.get('ubicacion') or s['nombre'] for s in res_todas_sedes.data}
+
+        with tab_pend:
+            st.subheader("Asignación y Planificación de Ruta")
+            ventas_opciones = {
+                f"Rem: {v.get('num_remision', 'S/N')} | ${v['monto_total']:,.2f} | {v['Clientes']['nombre']}": v 
+                for v in ventas_pendientes
+            }
+            
+            if ventas_opciones:
+                v_sel_labels = st.multiselect("Seleccionar Ventas para la Ruta", list(ventas_opciones.keys()))
+                
+                if v_sel_labels:
+                    ventas_sel = [ventas_opciones[l] for l in v_sel_labels]
+                    
+                    st.info("🗺️ **Planificador de Ruta**")
+                    s_orig = ventas_sel[0].get('sedes')
+                    orig_coords = s_orig.get('direccion', s_orig.get('ubicacion', "Perote, Veracruz")) if s_orig else "Perote, Veracruz"
+                    destinos = [v['lugar_entrega'] for v in ventas_sel]
+                    
+                    regreso_nom = st.selectbox("📍 Ubicación de Retorno (Regreso de unidad)", list(dict_sedes_regreso.keys()))
+                    dest_final = dict_sedes_regreso[regreso_nom]
+
+                    puntos = [orig_coords] + destinos + [dest_final]
+                    ruta_url = "/".join([urllib.parse.quote(str(p).replace("\n", " ")) for p in puntos])
+                    full_maps_url = f"https://www.google.com/maps/dir/{ruta_url}"
+                    
+                    st.link_button("🗺️ Abrir Mapa para ver KM y Tiempo", full_maps_url, use_container_width=True, type="primary")
+
+                    with st.form("f_despacho_ruta"):
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            u_envio = st.selectbox("Unidad", list(u_opts.keys()))
+                            op_envio = st.selectbox("Operador Responsable", list(oper_opts.keys()))
+                            acomp = st.text_input("Acompañantes")
+                        with col_b:
+                            km_est = st.number_input("Kilómetros totales (según Maps)", min_value=0.0, step=0.1)
+                            tiempo_est = st.text_input("Tiempo estimado (ej: 1h 20min)", placeholder="Según Maps")
+                            estatus_ini = st.selectbox("Estatus Inicial", ["en preparacion", "listo para enviar", "enviado"])
+                        
+                        if st.form_submit_button("🚀 Confirmar Despacho y Registrar"):
+                            ruta_uuid = f"RUTA-{pd.Timestamp.now().strftime('%m%d-%H%M')}"
+                            for v in ventas_sel:
+                                supabase.table("envios").insert({
+                                    "venta_id": v['id'], 
+                                    "unidad_id": u_opts[u_envio], 
+                                    "operador_id": oper_opts[op_envio],
+                                    "acompanantes": acomp,
+                                    "ruta_id": ruta_uuid, 
+                                    "estatus": estatus_ini,
+                                    "km_estimados": km_est,
+                                    "tiempo_estimado_min": tiempo_est,
+                                    "sede_retorno": regreso_nom
+                                }).execute()
+                            
+                            if estatus_ini == "enviado":
+                                supabase.table("unidades").update({"estado": "en ruta"}).eq("id", u_opts[u_envio]).execute()
+                            
+                            st.success(f"Ruta {ruta_uuid} registrada con {km_est} KM.")
+                            st.rerun()
+            else:
+                st.info("✅ No hay ventas pendientes.")
+
+        with tab_hist:
+            st.subheader("📋 Seguimiento Detallado de Rutas")
+            res_env = supabase.table("envios").select("*, ventas(*, Clientes(*), sedes(*)), unidades(*), usuarios(*)").order("fecha_registro", desc=True).execute()
+            
+            if res_env.data:
+                for en in res_env.data:
+                    txt_h = f"{en['ventas']['id']} {en['ventas']['Clientes']['nombre']} {en.get('ruta_id','')} {en['ventas'].get('num_remision','')}".lower()
+                    if busqueda_global and busqueda_global not in txt_h: continue
+                    
+                    cliente = en['ventas']['Clientes']['nombre']
+                    rem = en['ventas'].get('num_remision', 'S/N')
+                    estatus_actual = en['estatus'].upper()
+                    
+                    with st.expander(f"📦 Rem: {rem} | {cliente} | [{estatus_actual}] | 🛣️ {en.get('ruta_id','S/R')}"):
+                        col_det, col_act = st.columns([2, 1])
+                        
+                        with col_det:
+                            st.write(f"**Destino:** {en['ventas']['lugar_entrega']}")
+                            st.write(f"**Plan:** {en.get('km_estimados', 0)} KM | Regresa a: {en.get('sede_retorno', 'N/A')} | Tiempo est: {en.get('tiempo_estimado_min', 'N/A')}")
+                            
+                            # PERSISTENCIA HORA DE REGRESO (Visible mientras no sea estatus final)
+                            estados_finales = ["terminado", "cancelado", "devuelto"]
+                            if en['estatus'] not in estados_finales and en.get('tiempo_estimado_min'):
+                                try:
+                                    t_str = en['tiempo_estimado_min'].lower()
+                                    m_extra = 0
+                                    if 'h' in t_str: m_extra += int(t_str.split('h')[0].strip()) * 60
+                                    if 'min' in t_str: 
+                                        m_extra += int(t_str.split('min')[0].split('h')[-1].strip())
+                                    # Calculado desde la fecha de registro para ser persistente
+                                    hora_reg = pd.to_datetime(en['fecha_registro']).tz_convert('America/Mexico_City') + pd.Timedelta(minutes=m_extra)
+                                    st.success(f"⌛ **Retorno estimado:** {hora_reg.strftime('%H:%M')} (Aprox)")
+                                except: pass
+
+                            st.caption(f"Unidad: {en['unidades']['nombre_unidad']} | Operador: {en['usuarios']['nombre_usuario']}")
+                            dir_m = urllib.parse.quote(str(en['ventas']['lugar_entrega']))
+                            st.link_button("📍 Ver Destino en Maps", f"https://www.google.com/maps/search/?api=1&query={dir_m}")
+
+                            st.markdown("---")
+                            st.caption("🕒 Historial de cambios y evidencias:")
+                            res_h = supabase.table("historial_estatus_envios").select("*").eq("envio_id", en['id']).order("fecha_cambio", desc=True).execute()
+                            
+                            if res_h.data:
+                                for h in res_h.data:
+                                    f_h = pd.to_datetime(h['fecha_cambio']).tz_convert('America/Mexico_City').strftime('%d/%m %H:%M')
+                                    c_txt, c_img = st.columns([0.8, 0.2])
+                                    with c_txt:
+                                        st.write(f"• `{f_h}`: **{h['estatus_nuevo'].upper()}**")
+                                        if h.get('notas'): st.caption(f"💬 {h['notas']}")
+                                    with c_img:
+                                        if h.get('evidencia_url'):
+                                            st.link_button("📸 Ver", h['evidencia_url'], use_container_width=True)
+
+                        with col_act:
+                            st.markdown("##### Actualizar Estatus")
+                            # SACAMOS EL SELECTBOX DEL FORM PARA REACTIVIDAD INMEDIATA
+                            opciones = ["en preparacion", "listo para enviar", "enviado", "retrasado", "recibido", "de regreso", "terminado", "cancelado", "devuelto"]
+                            nuevo_est = st.selectbox("Nuevo Estado", opciones, index=opciones.index(en['estatus']) if en['estatus'] in opciones else 0, key=f"sel_{en['id']}")
+                            
+                            with st.form(f"upd_est_{en['id']}"):
+                                # Campos de cierre real aparecen si la selección es 'terminado'
+                                if nuevo_est == "terminado":
+                                    st.warning("📊 Registro Real de Cierre:")
+                                    km_r = st.number_input("Kilometraje Real Final", min_value=0.0, step=0.1, key=f"km_r_{en['id']}")
+                                    t_r = st.text_input("Tiempo Real de Ruta", placeholder="Ej: 1h 40min", key=f"t_r_{en['id']}")
+                                else:
+                                    km_r, t_r = None, None
+
+                                nota_h = st.text_input("Nota / Observaciones", placeholder="Ej. Entregado sin novedad", key=f"nota_{en['id']}")
+                                evid_file = st.file_uploader("Evidencia Fotográfica", type=["jpg", "png"], key=f"file_{en['id']}")
+                                
+                                if st.form_submit_button("Actualizar y Guardar 💾"):
+                                    url_evid = subir_archivo(evid_file, "evidencias", "envios") if evid_file else None
+                                    upd_data = {"estatus": nuevo_est}
+                                    
+                                    nota_final = nota_h
+                                    if nuevo_est == "terminado":
+                                        upd_data["fecha_recepcion"] = str(pd.Timestamp.now(tz='America/Mexico_City'))
+                                        if km_r is not None and t_r:
+                                            nota_final = f"{nota_h} | DATOS REALES: {km_r}km - {t_r}".strip(" | ")
+                                    
+                                    supabase.table("envios").update(upd_data).eq("id", en['id']).execute()
+                                    
+                                    supabase.table("historial_estatus_envios").insert({
+                                        "envio_id": en['id'], 
+                                        "estatus_anterior": en['estatus'],
+                                        "estatus_nuevo": nuevo_est, 
+                                        "usuario_id": st.session_state.usuario_id,
+                                        "notas": nota_final, 
+                                        "evidencia_url": url_evid
+                                    }).execute()
+                                    
+                                    if nuevo_est in ["terminado", "cancelado", "devuelto"]:
+                                        supabase.table("unidades").update({"estado": "activo", "nota_estado": "Ruta finalizada"}).eq("id", en['unidad_id']).execute()
+                                    
+                                    st.success("Estatus actualizado correctamente.")
+                                    st.rerun()
+            else:
+                st.info("No hay registros en el historial.")         
 
     elif menu == "Clientes":
-        st.title("👥 Gestión de Clientes y Recibos")
-        
-        # Definimos las 3 pestañas principales
-        tab1, tab2, tab3 = st.tabs(["📊 Cartera General", "🔍 Expediente Detallado", "🧾 Ver Recibos"])
-        
-        # --- TAB 1: CARTERA GENERAL ---
-        with tab1:
-            try:
-                res_c = supabase.table("Clientes").select("*").execute()
-                res_v = supabase.table("ventas").select("cliente_id, monto_total, monto_credito, fecha_venta").execute()
-                df_c, df_v = pd.DataFrame(res_c.data), pd.DataFrame(res_v.data)
-                
-                # --- BUSCADOR POR NOMBRE ---
-                busqueda_c = st.text_input("🔍 Buscar cliente por nombre", "").lower()
-                if busqueda_c:
-                    df_c = df_c[df_c['nombre'].str.lower().str.contains(busqueda_c)]
-
-                stats = []
-                for _, c in df_c.iterrows():
-                    cv = df_v[df_v['cliente_id'] == c['id']]
-                    u_compra = pd.to_datetime(cv['fecha_venta'].max()).tz_convert('America/Mexico_City').strftime('%d/%m/%Y %H:%M') if not cv.empty else "N/A"
+            st.title("👥 Gestión de Clientes y Recibos")
+            
+            # Definimos las 3 pestañas principales
+            tab1, tab2, tab3 = st.tabs(["📊 Cartera General", "🔍 Expediente Detallado", "🧾 Ver Recibos"])
+            
+            # --- TAB 1: CARTERA GENERAL ---
+            with tab1:
+                try:
+                    res_c = supabase.table("Clientes").select("*").execute()
+                    res_v = supabase.table("ventas").select("cliente_id, monto_total, monto_credito, fecha_venta").execute()
+                    df_c, df_v = pd.DataFrame(res_c.data), pd.DataFrame(res_v.data)
                     
-                    stats.append({
-                        "Nombre": c['nombre'], 
-                        "Dirección": c.get('direccion', 'Sin dirección'),
-                        "Saldo Deudor": cv['monto_credito'].sum() if not cv.empty else 0.0, 
-                        "Total Compras": cv['monto_total'].sum() if not cv.empty else 0.0, 
-                        "Última Compra": u_compra
-                    })
+                    busqueda_c = st.text_input("🔍 Buscar cliente por nombre", "").lower()
+                    if busqueda_c:
+                        df_c = df_c[df_c['nombre'].str.lower().str.contains(busqueda_c)]
+
+                    stats = []
+                    for _, c in df_c.iterrows():
+                        cv = df_v[df_v['cliente_id'] == c['id']]
+                        u_compra = pd.to_datetime(cv['fecha_venta'].max()).tz_convert('America/Mexico_City').strftime('%d/%m/%Y %H:%M') if not cv.empty else "N/A"
+                        
+                        stats.append({
+                            "Nombre": c['nombre'], 
+                            "Dirección": c.get('direccion', 'Sin dirección'),
+                            "Saldo Deudor": cv['monto_credito'].sum() if not cv.empty else 0.0, 
+                            "Total Compras": cv['monto_total'].sum() if not cv.empty else 0.0, 
+                            "Última Compra": u_compra
+                        })
+                    
+                    if stats:
+                        df_final = pd.DataFrame(stats).sort_values("Saldo Deudor", ascending=False)
+                        st.dataframe(df_final, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No se encontraron clientes.")
+                except Exception as e: 
+                    st.error(f"Error al cargar cartera: {e}")
+
+            # --- TAB 2: EXPEDIENTE DETALLADO ---
+            with tab2:
+                st.subheader("Consulta de Historial por Cliente")
+                res_c_exp = supabase.table("Clientes").select("*").order("nombre").execute()
                 
-                if stats:
-                    df_final = pd.DataFrame(stats).sort_values("Saldo Deudor", ascending=False)
-                    st.dataframe(df_final, use_container_width=True, hide_index=True)
+                busqueda_exp = st.text_input("🔍 Filtrar cliente para auditar", "").lower()
+                opciones_exp = [c for c in res_c_exp.data if busqueda_exp in c['nombre'].lower()]
+                dict_c_exp = {c['nombre']: c for c in opciones_exp}
+                
+                if dict_c_exp:
+                    c_sel_nom = st.selectbox("Seleccionar Cliente", list(dict_c_exp.keys()))
+                    
+                    if c_sel_nom:
+                        c_data = dict_c_exp[c_sel_nom]
+                        
+                        st.write("📅 **Rango de fechas para el reporte:**")
+                        col_f1, col_f2 = st.columns(2)
+                        with col_f1:
+                            f_inicio = st.date_input("Desde", value=pd.to_datetime("today") - pd.Timedelta(days=30))
+                        with col_f2:
+                            f_fin = st.date_input("Hasta", value=pd.to_datetime("today"))
+                        
+                        st.divider()
+                        
+                        col1, col2, col3 = st.columns(3)
+                        col1.info(f"**Nombre:**\n\n{c_data['nombre']}")
+                        col2.info(f"**WhatsApp:**\n\n{c_data.get('telefono', 'N/A')}")
+                        col3.info(f"**Email:**\n\n{c_data.get('email', 'N/A')}")
+                        
+                        ventas_c = supabase.table("ventas").select("*, usuarios(nombre_usuario)")\
+                            .eq("cliente_id", c_data['id'])\
+                            .gte("fecha_venta", str(f_inicio))\
+                            .lte("fecha_venta", str(f_fin) + " 23:59:59")\
+                            .order("fecha_venta", desc=True).execute()
+                        
+                        df_v_c = pd.DataFrame(ventas_c.data)
+                        
+                        ids_ventas_periodo = [v['id'] for v in ventas_c.data] if ventas_c.data else []
+                        df_a_c = pd.DataFrame()
+                        if ids_ventas_periodo:
+                            abonos_c = supabase.table("abonos").select("*, ventas(num_remision)").in_("venta_id", ids_ventas_periodo).order("fecha_abono", desc=True).execute()
+                            df_a_c = pd.DataFrame(abonos_c.data)
+
+                        m1, m2, m3, m4 = st.columns(4)
+                        m1.metric("Total Comprado (Periodo)", f"${df_v_c['monto_total'].sum() if not df_v_c.empty else 0:,.2f}")
+                        m2.metric("Deuda Actual", f"${df_v_c['monto_credito'].sum() if not df_v_c.empty else 0:,.2f}")
+                        u_c_f = pd.to_datetime(df_v_c['fecha_venta'].iloc[0]).tz_convert('America/Mexico_City').strftime('%d/%m/%Y %H:%M') if not df_v_c.empty else "N/A"
+                        m3.write(f"**Última Compra:**\n\n{u_c_f}")
+                        u_a_f = pd.to_datetime(df_a_c['fecha_abono'].iloc[0]).tz_convert('America/Mexico_City').strftime('%d/%m/%Y %H:%M') if not df_a_c.empty else "N/A"
+                        m4.write(f"**Último Abono:**\n\n{u_a_f}")
+
+                        if st.button("📥 Generar Estado de Cuenta PDF"):
+                            v_prev = supabase.table("ventas").select("id, monto_total").eq("cliente_id", c_data['id']).lt("fecha_venta", str(f_inicio)).execute()
+                            ids_p = [x['id'] for x in v_prev.data]
+                            a_prev = supabase.table("abonos").select("monto_abono").in_("venta_id", ids_p).lt("fecha_abono", str(f_inicio)).execute() if ids_p else None
+                            
+                            sum_v_prev = sum(float(x['monto_total']) for x in v_prev.data)
+                            sum_a_prev = sum(float(x['monto_abono']) for x in a_prev.data) if a_prev else 0
+                            saldo_anterior_inicial = sum_v_prev - sum_a_prev
+
+                            pdf = FPDF(orientation='L', unit='mm', format='A4')
+                            pdf.add_page()
+                            pdf.set_font("Arial", 'B', 14)
+                            pdf.cell(0, 10, "CEDIS MOCTEZUMA PEROTE S.A. DE C.V.", ln=True, align='C')
+                            pdf.set_font("Arial", 'B', 12)
+                            pdf.cell(0, 7, "RECONOCIMIENTO DE ADEUDO / RELACIÓN DE ABONOS Y ADEUDOS", ln=True, align='C')
+                            pdf.ln(5)
+                            
+                            pdf.set_font("Arial", 'B', 11)
+                            pdf.cell(0, 7, f"CLIENTE: {c_data['nombre'].upper()}", ln=True)
+                            pdf.cell(0, 7, f"PERIODO: {f_inicio.strftime('%d/%m/%Y')} AL {f_fin.strftime('%d/%m/%Y')}", ln=True)
+                            pdf.ln(5)
+
+                            pdf.set_fill_color(240, 240, 240)
+                            pdf.set_font("Arial", 'B', 9)
+                            pdf.cell(30, 8, "FECHA", 1, 0, 'C', True)
+                            pdf.cell(110, 8, "DESCRIPCIÓN / DETALLE MATERIALES", 1, 0, 'C', True)
+                            pdf.cell(35, 8, "CARGOS (+)", 1, 0, 'C', True)
+                            pdf.cell(35, 8, "ABONOS (-)", 1, 0, 'C', True)
+                            pdf.cell(35, 8, "SALDO", 1, 1, 'C', True)
+
+                            pdf.set_font("Arial", size=9)
+                            pdf.cell(30, 7, f_inicio.strftime('%d/%m/%Y'), 1)
+                            pdf.cell(110, 7, "SALDO ANTERIOR ACUMULADO", 1)
+                            pdf.cell(35, 7, "-", 1, 0, 'R')
+                            pdf.cell(35, 7, "-", 1, 0, 'R')
+                            pdf.cell(35, 7, f"${saldo_anterior_inicial:,.2f}", 1, 1, 'R')
+
+                            movs = []
+                            for _, v in df_v_c.iterrows():
+                                items_v = supabase.table("detalles_venta").select("cantidad, inventario(nombre_producto, unidad_medida)").eq("venta_id", v['id']).execute()
+                                desc_materiales = ", ".join([f"{i['cantidad']} {i['inventario']['unidad_medida']} {i['inventario']['nombre_producto']}" for i in items_v.data])
+                                rem = v.get('num_remision', 'S/N')
+                                movs.append({
+                                    'fecha': pd.to_datetime(v['fecha_venta']),
+                                    'desc': f"Rem {rem}: {desc_materiales}",
+                                    'cargo': float(v['monto_total']),
+                                    'abono': 0.0
+                                })
+                            for _, a in df_a_c.iterrows():
+                                rem_abonada = a['ventas']['num_remision'] if a.get('ventas') else "S/N"
+                                nota = f" - Nota: {a['referencia']}" if a.get('referencia') else ""
+                                movs.append({
+                                    'fecha': pd.to_datetime(a['fecha_abono']),
+                                    'desc': f"Abono a Rem {rem_abonada} - {a['forma_pago']}{nota}",
+                                    'cargo': 0.0,
+                                    'abono': float(a['monto_abono'])
+                                })
+                            
+                            movs = sorted(movs, key=lambda x: x['fecha'])
+                            saldo_acum = saldo_anterior_inicial
+                            total_c = 0.0
+                            total_a = 0.0
+
+                            for m in movs:
+                                saldo_acum += (m['cargo'] - m['abono'])
+                                total_c += m['cargo']
+                                total_a += m['abono']
+                                
+                                x_pos = pdf.get_x()
+                                y_pos = pdf.get_y()
+                                pdf.set_xy(x_pos + 30, y_pos)
+                                pdf.multi_cell(110, 6, m['desc'], 0, 'L')
+                                end_y = pdf.get_y()
+                                h = max(7, end_y - y_pos)
+                                
+                                pdf.set_xy(x_pos, y_pos)
+                                pdf.cell(30, h, m['fecha'].strftime('%d/%m/%Y'), 1)
+                                pdf.cell(110, h, "", 1)
+                                pdf.set_xy(x_pos + 140, y_pos)
+                                pdf.cell(35, h, f"${m['cargo']:,.2f}" if m['cargo'] > 0 else "-", 1, 0, 'R')
+                                pdf.cell(35, h, f"${m['abono']:,.2f}" if m['abono'] > 0 else "-", 1, 0, 'R')
+                                pdf.cell(35, h, f"${saldo_acum:,.2f}", 1, 1, 'R')
+
+                            pdf.set_font("Arial", 'B', 10)
+                            pdf.cell(140, 9, "TOTALES DEL PERIODO:", 1, 0, 'R', True)
+                            pdf.cell(35, 9, f"${total_c:,.2f}", 1, 0, 'R', True)
+                            pdf.cell(35, 9, f"${total_a:,.2f}", 1, 0, 'R', True)
+                            pdf.cell(35, 9, f"${saldo_acum:,.2f}", 1, 1, 'R', True)
+                            
+                            pdf.ln(10)
+                            pdf.set_font("Arial", 'B', 10)
+                            pdf.cell(0, 10, "ACEPTO DE CONFORMIDAD EL SALDO MENCIONADO", 0, 1, 'C')
+                            pdf.ln(5)
+                            pdf.cell(0, 10, "_______________________________________", 0, 1, 'C')
+                            pdf.cell(0, 5, f"FIRMA DEL CLIENTE: {c_data['nombre'].upper()}", 0, 1, 'C')
+
+                            nombre_archivo = f"EdoCuenta_{c_data['nombre'].replace(' ', '_')}_{f_inicio}_al_{f_fin}.pdf"
+                            pdf_bytes = pdf.output(dest='S').encode('latin-1', 'ignore')
+                            st.download_button(label="💾 Descargar Estado de Cuenta", data=pdf_bytes, file_name=nombre_archivo, mime="application/pdf")
+
+                        st.write("### 📜 Historial de Movimientos (Vista rápida)")
+                        t_ventas_tab, t_abonos_tab = st.tabs(["🛍️ Compras", "💰 Abonos Realizados"])
+                        
+                        with t_ventas_tab:
+                            if not df_v_c.empty:
+                                for _, row in df_v_c.iterrows():
+                                    fecha_mx = pd.to_datetime(row['fecha_venta']).tz_convert('America/Mexico_City').strftime('%d/%m/%Y %H:%M')
+                                    col_info, col_btn = st.columns([4, 1])
+                                    with col_info:
+                                        rem = row.get('num_remision', 'S/N')
+                                        st.write(f"**Remisión:** `{rem}` | **Fecha:** {fecha_mx}")
+                                        st.caption(f"Total: ${row['monto_total']:,.2f} | Restante: ${row['monto_credito']:,.2f}")
+                                    with col_btn:
+                                        if st.button(f"Recibo 🧾", key=f"btn_exp_{row['id']}"):
+                                            st.session_state.ver_id = row['id']
+                                            st.rerun()
+                                    st.divider()
+                            else: st.write("No hay registros en este rango de fechas.")
+                        
+                        with t_abonos_tab:
+                            if not df_a_c.empty:
+                                df_a_c['fecha_mx'] = pd.to_datetime(df_a_c['fecha_abono']).dt.tz_convert('America/Mexico_City').dt.strftime('%d/%m/%Y %H:%M')
+                                df_a_c['Remisión'] = df_a_c['ventas'].apply(lambda x: x['num_remision'] if x else 'S/N')
+                                cols_a = [c for c in ['fecha_mx', 'Remisión', 'monto_abono', 'forma_pago', 'referencia'] if c in df_a_c.columns]
+                                st.dataframe(df_a_c[cols_a], use_container_width=True, hide_index=True)
+                            else: st.write("No hay abonos en este rango de fechas.")
                 else:
                     st.info("No se encontraron clientes.")
 
-            except Exception as e: 
-                st.error(f"Error al cargar cartera: {e}")
-
-        # --- TAB 2: EXPEDIENTE DETALLADO ---
-        with tab2:
-            st.subheader("Consulta de Historial por Cliente")
-            res_c_exp = supabase.table("Clientes").select("*").order("nombre").execute()
-            
-            # --- FILTRO PARA EL SELECTBOX ---
-            busqueda_exp = st.text_input("🔍 Filtrar cliente para auditar", "").lower()
-            opciones_exp = [c for c in res_c_exp.data if busqueda_exp in c['nombre'].lower()]
-            dict_c_exp = {c['nombre']: c for c in opciones_exp}
-            
-            if dict_c_exp:
-                c_sel_nom = st.selectbox("Seleccionar Cliente", list(dict_c_exp.keys()))
+            # --- TAB 3: BUSCADOR GENERAL DE RECIBOS ---
+            with tab3:
+                st.subheader("Generación de Recibos")
+                busqueda_rec = st.text_input("🔍 Buscar recibos por nombre de cliente", "").lower()
+                res_rec = supabase.table("ventas").select("id, num_remision, fecha_venta, monto_total, Clientes(nombre)").order("fecha_venta", desc=True).execute()
+                recibos_filtrados = [r for r in res_rec.data if busqueda_rec in r['Clientes']['nombre'].lower()]
                 
-                if c_sel_nom:
-                    c_data = dict_c_exp[c_sel_nom]
-                    st.divider()
-                    
-                    col1, col2, col3 = st.columns(3)
-                    col1.info(f"**Nombre:**\n\n{c_data['nombre']}")
-                    col2.info(f"**WhatsApp:**\n\n{c_data.get('telefono', 'N/A')}")
-                    col3.info(f"**Email:**\n\n{c_data.get('email', 'N/A')}")
-                    
-                    ventas_c = supabase.table("ventas").select("*, usuarios(nombre_usuario)").eq("cliente_id", c_data['id']).order("fecha_venta", desc=True).execute()
-                    df_v_c = pd.DataFrame(ventas_c.data)
-                    
-                    ids_ventas = [v['id'] for v in ventas_c.data] if ventas_c.data else []
-                    df_a_c = pd.DataFrame()
-                    if ids_ventas:
-                        abonos_c = supabase.table("abonos").select("*").in_("venta_id", ids_ventas).order("fecha_abono", desc=True).execute()
-                        df_a_c = pd.DataFrame(abonos_c.data)
+                for r in recibos_filtrados[:20]:
+                    fecha_mx = pd.to_datetime(r['fecha_venta']).tz_convert('America/Mexico_City').strftime('%d/%m/%Y')
+                    rem = r.get('num_remision', 'S/N')
+                    col_btn, col_info = st.columns([1, 4])
+                    with col_btn:
+                        if st.button(f"Ver 📄", key=f"btn_list_{r['id']}"):
+                            st.session_state.ver_id = r['id']
+                            st.rerun()
+                    with col_info:
+                        st.write(f"**{r['Clientes']['nombre']}** (Rem: {rem}) - ${r['monto_total']:,.2f} ({fecha_mx})")
+                
+                if not recibos_filtrados:
+                    st.info("No se encontraron recibos.")
 
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Total Comprado", f"${df_v_c['monto_total'].sum() if not df_v_c.empty else 0:,.2f}")
-                    m2.metric("Deuda Actual", f"${df_v_c['monto_credito'].sum() if not df_v_c.empty else 0:,.2f}")
-                    u_c_f = pd.to_datetime(df_v_c['fecha_venta'].iloc[0]).tz_convert('America/Mexico_City').strftime('%d/%m/%Y %H:%M') if not df_v_c.empty else "N/A"
-                    m3.write(f"**Última Compra:**\n\n{u_c_f}")
-                    u_a_f = pd.to_datetime(df_a_c['fecha_abono'].iloc[0]).tz_convert('America/Mexico_City').strftime('%d/%m/%Y %H:%M') if not df_a_c.empty else "N/A"
-                    m4.write(f"**Último Abono:**\n\n{u_a_f}")
-
-                    st.write("### 📜 Historial de Movimientos")
-                    t_ventas_tab, t_abonos_tab = st.tabs(["🛍️ Compras", "💰 Abonos Realizados"])
-                    
-                    with t_ventas_tab:
-                        if not df_v_c.empty:
-                            for _, row in df_v_c.iterrows():
-                                fecha_mx = pd.to_datetime(row['fecha_venta']).tz_convert('America/Mexico_City').strftime('%d/%m/%Y %H:%M')
-                                vendedor = row['usuarios']['nombre_usuario'] if row['usuarios'] else "N/A"
-                                col_info, col_btn = st.columns([4, 1])
-                                with col_info:
-                                    st.write(f"**Folio:** `{str(row['id'])[:8]}` | **Fecha:** {fecha_mx}")
-                                    st.caption(f"Total: ${row['monto_total']:,.2f} | Restante: ${row['monto_credito']:,.2f}")
-                                with col_btn:
-                                    if st.button(f"Recibo 🧾", key=f"btn_exp_{row['id']}"):
-                                        st.session_state.ver_id = row['id']
-                                        st.rerun()
-                                st.divider()
-                        else: st.write("No hay registros.")
-                    
-                    with t_abonos_tab:
-                        if not df_a_c.empty:
-                            df_a_c['fecha_mx'] = pd.to_datetime(df_a_c['fecha_abono']).dt.tz_convert('America/Mexico_City').dt.strftime('%d/%m/%Y %H:%M')
-                            cols_a = [c for c in ['fecha_mx', 'monto_abono', 'forma_pago', 'referencia'] if c in df_a_c.columns]
-                            st.dataframe(df_a_c[cols_a], use_container_width=True, hide_index=True)
-                        else: st.write("No hay abonos.")
-            else:
-                st.info("No se encontraron clientes.")
-
-        # --- TAB 3: BUSCADOR GENERAL DE RECIBOS ---
-        with tab3:
-            st.subheader("Generación de Recibos")
-            # --- BUSCADOR DE RECIBOS POR CLIENTE ---
-            busqueda_rec = st.text_input("🔍 Buscar recibos por nombre de cliente", "").lower()
-            
-            res_rec = supabase.table("ventas").select("id, fecha_venta, monto_total, Clientes(nombre)").order("fecha_venta", desc=True).execute()
-            
-            recibos_filtrados = [r for r in res_rec.data if busqueda_rec in r['Clientes']['nombre'].lower()]
-            
-            for r in recibos_filtrados[:20]: # Limitamos a los últimos 20 encontrados
-                fecha_mx = pd.to_datetime(r['fecha_venta']).tz_convert('America/Mexico_City').strftime('%d/%m/%Y')
-                col_btn, col_info = st.columns([1, 4])
-                with col_btn:
-                    if st.button(f"Ver 📄", key=f"btn_list_{r['id']}"):
-                        st.session_state.ver_id = r['id']
-                        st.rerun()
-                with col_info:
-                    st.write(f"**{r['Clientes']['nombre']}** - ${r['monto_total']:,.2f} ({fecha_mx})")
-            
-            if not recibos_filtrados:
-                st.info("No se encontraron recibos.")
-
-    # --- LÓGICA DE VISUALIZACIÓN DEL RECIBO (GLOBAL) ---
-    if 'ver_id' in st.session_state:
-        st.divider()
-        col_tit, col_close = st.columns([5, 1])
-        with col_tit: st.subheader("🧾 Vista de Nota de Venta")
-        with col_close: 
-            if st.button("❌ Cerrar"):
-                del st.session_state.ver_id
-                st.rerun()
-        
-        # Consulta detallada
-        vd = supabase.table("ventas").select("*, Clientes(*), usuarios(nombre_usuario)").eq("id", st.session_state.ver_id).single().execute().data
-        items = supabase.table("detalles_venta").select("*, inventario(nombre_producto)").eq("venta_id", vd['id']).execute().data
-        
-        fecha_v_mx = pd.to_datetime(vd['fecha_venta']).tz_convert('America/Mexico_City').strftime('%d/%m/%Y %H:%M')
-        st.markdown(f"### CEDIS PEROTE")
-        st.write(f"**Folio:** `{vd['id']}`")
-        st.write(f"**Fecha:** {fecha_v_mx} | **Vendedor:** {vd['usuarios']['nombre_usuario']}")
-        st.write(f"**Cliente:** {vd['Clientes']['nombre']} | **Entrega:** {vd['lugar_entrega']}")
-        
-        df_items = pd.DataFrame([
-            {
-                "Material": i['inventario']['nombre_producto'], 
-                "Cant": i['cantidad'], 
-                "Precio U.": f"${i['precio_unitario']:,.2f}",
-                "Desc. Aplicado": f"-${i.get('descuento_aplicado', 0):,.2f}",
-                "Subtotal": f"${i['subtotal']:,.2f}"
-            } for i in items
-        ])
-        st.table(df_items)
-
-        cargos = vd.get('cargos_adicionales', {})
-        flete = cargos.get('flete', 0.0)
-        maniobra = cargos.get('maniobra', 0.0)
-        
-        if flete > 0 or maniobra > 0:
-            st.write("---")
-            st.write("**Cargos de Logística:**")
-            cf, cm = st.columns(2)
-            cf.write(f"Flete: ${flete:,.2f}")
-            cm.write(f"Maniobra: ${maniobra:,.2f}")
-        
-        st.write("---")
-        st.write(f"## TOTAL FINAL: ${vd['monto_total']:,.2f}")
-        st.write(f"**Pagado hoy:** ${vd['monto_total'] - vd['monto_credito']:,.2f} | **Restante:** ${vd['monto_credito']:,.2f}")
-        st.info("💡 Tip: Presiona Ctrl+P para guardar como PDF.")
 
 
 # --- PÁGINA: REGISTRAR ABONO (COBRANZA CON EVIDENCIA) ---
@@ -960,161 +1263,7 @@ else:
                 else:
                     st.info("Registre una unidad en la pestaña 'Alta de Unidad' primero.")
 
-    elif menu == "Logística y Envíos":
-        st.title("🚚 Control de Entregas - CEDIS Perote")
-        tab_pend, tab_hist = st.tabs(["📦 Envíos Pendientes", "📜 Historial de Rutas"])
-
-        # 1. Datos iniciales
-        res_envios_finalizados = supabase.table("envios").select("venta_id").in_("estatus", ["terminado", "cancelado", "devuelto"]).execute()
-        ids_excluir = [e['venta_id'] for e in res_envios_finalizados.data]
-
-        # AJUSTE: Traemos el nombre de la sede desde la relación con ventas
-        res_v_raw = supabase.table("ventas").select("*, Clientes(nombre), sedes(nombre)").order("fecha_entrega").execute()
-        ventas_filtradas = [v for v in res_v_raw.data if v['id'] not in ids_excluir]
-        
-        res_unid = supabase.table("unidades").select("*").eq("estado", "activo").execute()
-        res_oper = supabase.table("usuarios").select("id, nombre_usuario").execute()
-        
-        with tab_pend:
-            st.subheader("Asignación y Despacho de Ruta")
-            # AJUSTE: Mostramos la sede en la etiqueta de selección para saber de dónde sale el material
-            ventas_opciones = {
-                f"Folio: {v['id'][:8]} - {v['Clientes']['nombre']} (Sede: {v['sedes']['nombre'] if v['sedes'] else 'N/A'})": v 
-                for v in ventas_filtradas
-            }
-            
-            if ventas_opciones:
-                v_sel_labels = st.multiselect("Ventas para la Ruta", list(ventas_opciones.keys()))
-                if v_sel_labels:
-                    with st.form("f_envio_multi"):
-                        u_opts = {f"{u['nombre_unidad']} ({u['placas']})": u['id'] for u in res_unid.data}
-                        u_envio = st.selectbox("Unidad", list(u_opts.keys()))
-                        oper_opts = {o['nombre_usuario']: o['id'] for o in res_oper.data}
-                        op_envio = st.selectbox("Operador Responsable", list(oper_opts.keys()))
-                        acomp = st.text_input("Acompañantes")
-                        estatus_ini = st.selectbox("Estatus Inicial", ["en preparacion", "listo para enviar", "enviado"])
-                        
-                        if st.form_submit_button("🚀 Confirmar Despacho"):
-                            ruta_uuid = f"RUTA-{pd.Timestamp.now().strftime('%m%d-%H%M')}"
-                            for l in v_sel_labels:
-                                v_id = ventas_opciones[l]['id']
-                                supabase.table("envios").insert({
-                                    "venta_id": v_id, 
-                                    "unidad_id": u_opts[u_envio], 
-                                    "operador_id": oper_opts[op_envio],
-                                    "acompanantes": acomp,
-                                    "ruta_id": ruta_uuid, 
-                                    "estatus": estatus_ini
-                                }).execute()
-                            
-                            if estatus_ini == "enviado":
-                                supabase.table("unidades").update({"estado": "en ruta"}).eq("id", u_opts[u_envio]).execute()
-                            
-                            st.success(f"Ruta {ruta_uuid} creada")
-                            st.rerun()
-            else:
-                st.info("✅ No hay ventas pendientes.")
-
-        # --- TAB 2: HISTORIAL Y SEGUIMIENTO DETALLADO ---
-        with tab_hist:
-            st.subheader("📋 Seguimiento de Rutas por Venta")
-            busqueda = st.text_input("🔍 Buscar por Folio, Cliente o Sede", "").strip().lower()
-            
-            # AJUSTE: Agregamos sedes(nombre) en el select profundo
-            res_env = supabase.table("envios").select("*, ventas(*, Clientes(*), sedes(*)), unidades(*), usuarios(*)").order("fecha_registro", desc=True).execute()
-            
-            envios_mostrar = res_env.data
-            if busqueda:
-                envios_mostrar = [
-                    en for en in res_env.data 
-                    if busqueda in en['ventas']['id'].lower() or 
-                       busqueda in en['ventas']['Clientes']['nombre'].lower() or
-                       (en['ventas']['sedes'] and busqueda in en['ventas']['sedes']['nombre'].lower())
-                ]
-
-            if envios_mostrar:
-                for en in envios_mostrar:
-                    cliente = en['ventas']['Clientes']['nombre']
-                    # AJUSTE: Obtenemos el nombre de la sede de origen
-                    sede_origen = en['ventas']['sedes']['nombre'] if en['ventas']['sedes'] else "N/A"
-                    folio_v = en['ventas']['id'][:8]
-                    estatus_actual = en['estatus'].upper()
-                    label_ruta = f" | 🛣️ {en['ruta_id']}" if en.get('ruta_id') else ""
-                    
-                    # AJUSTE: Agregamos la sede al título del expander para visibilidad inmediata
-                    with st.expander(f"🏢 {sede_origen} ➡️ 👤 {cliente} | Venta: {folio_v}{label_ruta} | [{estatus_actual}]"):
-                        col_det, col_act = st.columns([2, 1])
-                        
-                        with col_det:
-                            st.markdown(f"**Origen (Sede):** {sede_origen}") # Visualización clara del origen
-                            st.markdown(f"**Unidad:** {en['unidades']['nombre_unidad']} ({en['unidades']['placas']})")
-                            st.markdown(f"**Operador:** {en['usuarios']['nombre_usuario']}")
-                            st.markdown(f"**Destino:** {en['ventas']['lugar_entrega']}")
-                            
-                            st.caption("🕒 Línea de tiempo de estatus:")
-                            res_h = supabase.table("historial_estatus_envios").select("*").eq("envio_id", en['id']).order("fecha_cambio", desc=True).execute()
-                            
-                            if res_h.data:
-                                for h in res_h.data:
-                                    f_h = pd.to_datetime(h['fecha_cambio']).tz_convert('America/Mexico_City').strftime('%d/%m %H:%M')
-                                    col_txt, col_btn = st.columns([0.8, 0.2])
-                                    with col_txt:
-                                        st.write(f"• `{f_h}`: **{h['estatus_nuevo'].upper()}**")
-                                        if h.get('notas'): st.caption(f"💬 {h['notas']}")
-                                    with col_btn:
-                                        if h.get('evidencia_url'):
-                                            st.link_button("📸 Ver", h['evidencia_url'], use_container_width=True)
-
-                        with col_act:
-                            st.markdown("##### Actualizar Estatus")
-                            with st.form(f"f_upd_{en['id']}"):
-                                opciones = ["en preparacion", "listo para enviar", "enviado", "retrasado", "recibido", "de regreso", "terminado", "cancelado", "devuelto"]
-                                nuevo_est = st.selectbox("Nuevo Estado", opciones, index=opciones.index(en['estatus']) if en['estatus'] in opciones else 0)
-                                nota_h = st.text_input("Nota del cambio", placeholder="Ej. Entregado")
-                                evid_update = st.file_uploader("Adjuntar evidencia (Opcional)", type=["jpg", "png"], key=f"evid_{en['id']}")
-                                
-                                if st.form_submit_button("Actualizar 💾"):
-                                    if nuevo_est != en['estatus'] or evid_update:
-                                        url_evid = subir_archivo(evid_update, "evidencias", "envios") if evid_update else None
-                                        
-                                        upd_envio = {"estatus": nuevo_est}
-                                        if url_evid:
-                                            upd_envio["evidencia_salida_url"] = url_evid 
-                                        if nuevo_est == "terminado":
-                                            upd_envio["fecha_recepcion"] = str(pd.Timestamp.now(tz='America/Mexico_City'))
-                                        
-                                        supabase.table("envios").update(upd_envio).eq("id", en['id']).execute()
-
-                                        supabase.table("historial_estatus_envios").insert({
-                                            "envio_id": en['id'],
-                                            "estatus_anterior": en['estatus'],
-                                            "estatus_nuevo": nuevo_est,
-                                            "usuario_id": st.session_state.usuario_id,
-                                            "notas": nota_h,
-                                            "evidencia_url": url_evid 
-                                        }).execute()
-
-                                        if nuevo_est in ["enviado", "retrasado", "de regreso", "recibido"]:
-                                            supabase.table("unidades").update({"estado": "en ruta"}).eq("id", en['unidad_id']).execute()
-                                        
-                                        elif nuevo_est in ["terminado", "cancelado", "devuelto"]:
-                                            ruta_id = en.get('ruta_id')
-                                            liberar = True
-                                            if ruta_id:
-                                                res_r = supabase.table("envios").select("id, estatus").eq("ruta_id", ruta_id).execute()
-                                                for item in res_r.data:
-                                                    status_chk = nuevo_est if item['id'] == en['id'] else item['estatus']
-                                                    if status_chk not in ["terminado", "cancelado", "devuelto"]:
-                                                        liberar = False
-                                                        break
-                                            
-                                            if liberar:
-                                                supabase.table("unidades").update({"estado": "activo", "nota_estado": "Ruta finalizada"}).eq("id", en['unidad_id']).execute()
-                                        
-                                        st.success(f"Estatus actualizado")
-                                        st.rerun()
-            else:
-                st.info("No hay registros de envíos.")
+    
                     
     elif menu == "Gestión de Gastos":
         st.title("💰 Control de Gastos - CEDIS Perote")
@@ -1649,5 +1798,6 @@ else:
                 st.table(df_h)
             else:
                 st.info("No hay cambios registrados en el historial.")
+
 
 
