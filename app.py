@@ -1516,7 +1516,6 @@ else:
                     if "Registrar Gasto" in tab_name:
                         st.subheader("Nuevo Registro")
                         
-                        # Sacamos los selectores del formulario para que sean interactivos
                         c_top1, c_top2 = st.columns(2)
                         with c_top1:
                             t_gasto = st.selectbox("Tipo de Gasto", [
@@ -1527,10 +1526,11 @@ else:
                             responsable_nom = st.selectbox("Responsable del Gasto", list(dict_users.keys()))
                             responsable_id = dict_users[responsable_nom]
 
-                        # SECCIÓN DINÁMICA: Aparece inmediatamente al elegir Combustible
                         unidad_sel_id = None
                         litros_g = 0.0
                         km_g = 0
+                        dias_t = None
+                        beneficiario_id = None
                         
                         if t_gasto == "Combustible":
                             st.info("⛽ **Detalles de Combustible requeridos**")
@@ -1544,8 +1544,16 @@ else:
                             with col_gas3:
                                 km_min = int(u_info.get('kilometraje_actual', 0))
                                 km_g = st.number_input("Kilometraje Actual", min_value=km_min, value=km_min)
+                        
+                        elif t_gasto == "Salarios":
+                            st.info("👥 **Detalles de Nómina**")
+                            col_sal1, col_sal2 = st.columns(2)
+                            with col_sal1:
+                                empleado_nom = st.selectbox("Personal a quien se paga", list(dict_users.keys()), key="sal_emp")
+                                beneficiario_id = dict_users[empleado_nom]
+                            with col_sal2:
+                                dias_t = st.number_input("Días trabajados", min_value=1, max_value=31, value=7)
 
-                        # Formulario para el resto de los datos y el botón de guardado
                         with st.form("f_final_gasto", clear_on_submit=True):
                             c1, c2 = st.columns(2)
                             with c1:
@@ -1566,7 +1574,6 @@ else:
                                 else:
                                     url_g = subir_archivo(evid_g, "evidencias", "gastos") if evid_g else None
                                     
-                                    # 1. Insertar en tabla GASTOS
                                     ins_data = {
                                         "usuario_id": responsable_id,
                                         "tipo_gasto": t_gasto,
@@ -1574,14 +1581,14 @@ else:
                                         "monto": monto_g,
                                         "descripcion": desc_g,
                                         "estatus_gasto": estatus_g,
-                                        "evidencia_url": url_g
+                                        "evidencia_url": url_g,
+                                        "dias_trabajados": dias_t,
+                                        "beneficiario_id": beneficiario_id
                                     }
                                     supabase.table("gastos").insert(ins_data).execute()
 
-                                    # 2. Si es combustible, insertar en COMBUSTIBLE_UNIDADES
                                     if t_gasto == "Combustible" and unidad_sel_id:
                                         ppl = monto_g / litros_g if litros_g > 0 else 0
-                                        
                                         data_comb = {
                                             "unidad_id": unidad_sel_id,
                                             "fecha": str(pd.Timestamp.now().date()),
@@ -1593,27 +1600,36 @@ else:
                                             "vendedor_id": st.session_state.usuario_id
                                         }
                                         supabase.table("combustible_unidades").insert(data_comb).execute()
-                                        
-                                        # Actualizar KM en la unidad
                                         supabase.table("unidades").update({"kilometraje_actual": km_g}).eq("id", unidad_sel_id).execute()
                                         st.toast("⛽ Datos de flota actualizados")
 
-                                    st.success(f"✅ Gasto y vinculación registrados con éxito")
+                                    st.success(f"✅ Gasto registrado con éxito")
                                     st.rerun()
 
                     elif "Historial y Auditoría" in tab_name:
                         st.subheader("Buscador de Gastos")
-                        res_gastos = supabase.table("gastos").select("*, usuarios(nombre_usuario)").order("fecha_registro", desc=True).execute()
+                        # CORRECCIÓN AQUÍ: Especificamos la relación exacta !gastos_usuario_id_fkey
+                        res_gastos = supabase.table("gastos").select("*, responsable:usuarios!gastos_usuario_id_fkey(nombre_usuario), beneficiario:usuarios!gastos_beneficiario_id_fkey(nombre_usuario)").order("fecha_registro", desc=True).execute()
                         
                         if res_gastos.data:
                             for g in res_gastos.data:
-                                with st.expander(f"💰 {g['tipo_gasto']} - ${g['monto']:,.2f} ({g['fecha_registro'][:10]}) - {g['estatus_gasto']}"):
+                                label_expander = f"💰 {g['tipo_gasto']} - ${g['monto']:,.2f} ({g['fecha_registro'][:10]})"
+                                with st.expander(label_expander):
                                     col_i, col_a = st.columns([2, 1])
                                     
                                     with col_i:
-                                        st.write(f"**Responsable:** {g['usuarios']['nombre_usuario']}")
+                                        # Usamos los alias definidos en el select
+                                        resp_nom = g.get('responsable', {}).get('nombre_usuario', 'N/A')
+                                        st.write(f"**Responsable:** {resp_nom}")
+                                        
+                                        if g['tipo_gasto'] == "Salarios":
+                                            bene_nom = g.get('beneficiario', {}).get('nombre_usuario', 'N/A')
+                                            st.write(f"**Pagado a:** {bene_nom}")
+                                            st.write(f"**Días trabajados:** {g.get('dias_trabajados', 'N/A')}")
+                                        
                                         st.write(f"**Categoría:** {g['subcategoria']}")
                                         st.write(f"**Descripción:** {g['descripcion']}")
+                                        
                                         if g['evidencia_url']:
                                             st.link_button("Ver Evidencia 📄", g['evidencia_url'])
                                         
@@ -2096,6 +2112,7 @@ else:
                             st.table(df_h)
                         else:
                             st.info("No hay cambios registrados en el historial.")
+
 
 
 
