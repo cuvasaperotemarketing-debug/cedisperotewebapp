@@ -534,27 +534,58 @@ else:
             n_remision = st.number_input("N° de Remisión (Foliado Nota)", min_value=0, step=1, value=0)
             calle = st.text_input("Calle y Número")
             colonia = st.text_input("Colonia")
-            cp = st.text_input("Código Postal (CP)", placeholder="Ej: 91270") # NUEVO CAMPO
+            cp = st.text_input("Código Postal (CP)", placeholder="Ej: 91270")
             municipio = st.text_input("Municipio/Delegación", value="Perote")
             estado = st.text_input("Estado", value="Veracruz")
-            # CONCATENACIÓN CON CP INCLUIDO:
             lug_e_completo = f"{calle}, {colonia}, CP: {cp}, {municipio}, {estado}"
-        
+
+            # --- BOTÓN DE GOOGLE MAPS PARA CALCULAR KM ---
+            if cp:
+                query_maps = f"{sede_venta_nom} a CP {cp}, {municipio}, {estado}"
+                url_maps = f"https://www.google.com/maps/dir/{sede_venta_nom}/{cp}+{municipio}"
+                st.link_button("🗺️ Abrir Maps para calcular Distancia", url_maps, use_container_width=True)
+
+            st.markdown("---")
+            st.info("⛽ **Calculadora de Flete**")
+            km_ida = st.number_input("Distancia de ida (Km)", min_value=0.0, step=0.1, help="Pon los Km que diga Maps solo de ida.")
+            costo_casetas = st.number_input("Casetas Ida y Vuelta ($)", min_value=0.0, step=10.0)
+            
+            dist_total = (km_ida * 2) + 20
+            gasolina_est = (dist_total / 1.7) * 26.60
+            pago_op = dist_total * 2.8
+            ganancia_fix = 1000.0
+            
+            flete_sugerido = gasolina_est + pago_op + costo_casetas + ganancia_fix
+            st.caption(f"Flete Sugerido: ${flete_sugerido:,.2f}")
+            if 'c_sel' in locals() and c_sel > 0:
+                st.caption(f"Aumentar Por Pieza/Cantidad: ${flete_sugerido/c_sel:,.2f}")
+                st.caption(f"Nuevo Precio Por Pieza/Cantidad: ${(flete_sugerido/c_sel)+precio_lista:,.2f}")
+
         with c3:
             st.markdown("##### 💰 Totales")
-            flete = st.number_input("Flete ($)", min_value=0.0, step=50.0)
+            flete = st.number_input("Flete Final ($)", min_value=0.0, value=float(flete_sugerido), step=50.0)
             maniobra = st.number_input("Maniobra ($)", min_value=0.0, step=50.0)
-            pagado = st.number_input("Pago hoy ($)", min_value=0.0)
             
-            total_v = float(subtotal_productos + flete + maniobra)
+            # --- SECCIÓN DE IVA ---
+            subtotal_base = float(subtotal_productos + flete + maniobra)
+            aplicar_iva = st.toggle("Añadir IVA (16%)")
+            iva_monto = subtotal_base * 0.16 if aplicar_iva else 0.0
+            
+            if aplicar_iva:
+                st.write(f"Subtotal: ${subtotal_base:,.2f}")
+                st.write(f"IVA (16%): ${iva_monto:,.2f}")
+            
+            total_v = subtotal_base + iva_monto
+            pagado = st.number_input("Pago hoy ($)", min_value=0.0)
             credito = total_v - pagado
+            
             st.markdown(f"### TOTAL: :green[${total_v:,.2f}]")
             evid = st.file_uploader("Evidencia de Pago", type=["jpg", "png", "pdf"])
 
         if st.button("✅ PROCESAR VENTA FINAL", use_container_width=True, type="primary"):
             if not st.session_state.carrito:
                 st.error("Carrito vacío")
-            elif not calle or not colonia or not cp: # Validación de CP
+            elif not calle or not colonia or not cp:
                 st.error("Faltan datos de dirección o Código Postal")
             else:
                 target_id = None
@@ -575,7 +606,19 @@ else:
                     "evidencia_url": url_e, 
                     "fecha_entrega": str(fec_e), 
                     "lugar_entrega": lug_e_completo, 
-                    "cargos_adicionales": {"flete": flete, "maniobra": maniobra}, 
+                    "cargos_adicionales": {
+                        "flete": flete, 
+                        "maniobra": maniobra,
+                        "iva_incluido": aplicar_iva,
+                        "monto_iva": iva_monto,
+                        "calculo_flete": {
+                            "km_ida": km_ida,
+                            "gasolina_estimada": gasolina_est,
+                            "pago_operador": pago_op,
+                            "casetas": costo_casetas,
+                            "ganancia_camion": ganancia_fix
+                        }
+                    }, 
                     "estatus_pago": "pagado" if credito <= 0 else "pendiente",
                     "num_remision": n_remision
                 }
@@ -1944,6 +1987,7 @@ else:
                             st.table(df_h)
                         else:
                             st.info("No hay cambios registrados en el historial.")
+
 
 
 
