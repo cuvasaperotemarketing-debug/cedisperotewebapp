@@ -428,7 +428,8 @@ else:
 # --- PÁGINA: NUEVA VENTA (CON DESCUENTOS Y DIRECCIÓN DETALLADA) ---
     elif menu == "Nueva Venta":
         st.title("🛒 Nueva Orden de Venta")
-        
+        from fpdf import FPDF 
+
         # --- PASO 0: SELECCIÓN DE SEDE ORIGEN ---
         res_sedes = supabase.table("sedes").select("id, nombre").eq("estatus", "Activa").execute()
         dict_sedes = {s['nombre']: s['id'] for s in res_sedes.data}
@@ -528,7 +529,8 @@ else:
                 nuevo_cli_tel = st.text_input("WhatsApp")
             
             fec_e = st.date_input("Fecha Programada")
-        
+            tipo_v = st.selectbox("Tipo de Venta", ["Publico", "Reventa"])
+
         with c2:
             st.markdown("##### 📍 Dirección Detallada")
             n_remision = st.number_input("N° de Remisión (Foliado Nota)", min_value=0, step=1, value=0)
@@ -539,7 +541,6 @@ else:
             estado = st.text_input("Estado", value="Veracruz")
             lug_e_completo = f"{calle}, {colonia}, CP: {cp}, {municipio}, {estado}"
 
-            # --- BOTÓN DE GOOGLE MAPS PARA CALCULAR KM ---
             if cp:
                 query_maps = f"{sede_venta_nom} a CP {cp}, {municipio}, {estado}"
                 url_maps = f"https://www.google.com/maps/dir/{sede_venta_nom}/{cp}+{municipio}"
@@ -547,7 +548,7 @@ else:
 
             st.markdown("---")
             st.info("⛽ **Calculadora de Flete**")
-            km_ida = st.number_input("Distancia de ida (Km)", min_value=0.0, step=0.1, help="Pon los Km que diga Maps solo de ida.")
+            km_ida = st.number_input("Distancia de ida (Km)", min_value=0.0, step=0.1)
             costo_casetas = st.number_input("Casetas Ida y Vuelta ($)", min_value=0.0, step=10.0)
             
             dist_total = (km_ida * 2) + 20
@@ -557,87 +558,144 @@ else:
             
             flete_sugerido = gasolina_est + pago_op + costo_casetas + ganancia_fix
             st.caption(f"Flete Sugerido: ${flete_sugerido:,.2f}")
-            if 'c_sel' in locals() and c_sel > 0:
-                st.caption(f"Aumentar Por Pieza/Cantidad: ${flete_sugerido/c_sel:,.2f}")
-                st.caption(f"Nuevo Precio Por Pieza/Cantidad: ${(flete_sugerido/c_sel)+precio_lista:,.2f}")
 
         with c3:
             st.markdown("##### 💰 Totales")
             flete = st.number_input("Flete Final ($)", min_value=0.0, value=float(flete_sugerido), step=50.0)
             maniobra = st.number_input("Maniobra ($)", min_value=0.0, step=50.0)
             
-            # --- SECCIÓN DE IVA ---
             subtotal_base = float(subtotal_productos + flete + maniobra)
             aplicar_iva = st.toggle("Añadir IVA (16%)")
             iva_monto = subtotal_base * 0.16 if aplicar_iva else 0.0
-            
-            if aplicar_iva:
-                st.write(f"Subtotal: ${subtotal_base:,.2f}")
-                st.write(f"IVA (16%): ${iva_monto:,.2f}")
             
             total_v = subtotal_base + iva_monto
             pagado = st.number_input("Pago hoy ($)", min_value=0.0)
             credito = total_v - pagado
             
             st.markdown(f"### TOTAL: :green[${total_v:,.2f}]")
+            notas_venta = st.text_area("Notas de la Venta (para el PDF)")
             evid = st.file_uploader("Evidencia de Pago", type=["jpg", "png", "pdf"])
 
-        if st.button("✅ PROCESAR VENTA FINAL", use_container_width=True, type="primary"):
-            if not st.session_state.carrito:
-                st.error("Carrito vacío")
-            elif not calle or not colonia or not cp:
-                st.error("Faltan datos de dirección o Código Postal")
-            else:
-                target_id = None
-                if c_final_sel == "-- AGREGAR CLIENTE NUEVO --":
-                    res_new = supabase.table("Clientes").insert({"nombre": nuevo_cli_nom, "telefono": nuevo_cli_tel}).execute()
-                    target_id = res_new.data[0]['id']
+        col_btns_1, col_btns_2 = st.columns(2)
+        
+        with col_btns_1:
+            if st.button("✅ PROCESAR VENTA FINAL", use_container_width=True, type="primary"):
+                if not st.session_state.carrito:
+                    st.error("Carrito vacío")
+                elif not calle or not cp:
+                    st.error("Faltan datos de dirección para concretar venta")
                 else:
-                    target_id = dict_cli[c_final_sel]
-
-                url_e = subir_archivo(evid, "evidencias", "ventas") if evid else None
-                
-                v_ins = {
-                    "cliente_id": target_id, 
-                    "vendedor_id": st.session_state.usuario_id, 
-                    "sede_id": sede_id_seleccionada,
-                    "monto_total": total_v, 
-                    "monto_credito": credito, 
-                    "evidencia_url": url_e, 
-                    "fecha_entrega": str(fec_e), 
-                    "lugar_entrega": lug_e_completo, 
-                    "cargos_adicionales": {
-                        "flete": flete, 
-                        "maniobra": maniobra,
-                        "iva_incluido": aplicar_iva,
-                        "monto_iva": iva_monto,
-                        "calculo_flete": {
-                            "km_ida": km_ida,
-                            "gasolina_estimada": gasolina_est,
-                            "pago_operador": pago_op,
-                            "casetas": costo_casetas,
-                            "ganancia_camion": ganancia_fix
-                        }
-                    }, 
-                    "estatus_pago": "pagado" if credito <= 0 else "pendiente",
-                    "num_remision": n_remision
-                }
-                rv = supabase.table("ventas").insert(v_ins).execute()
-                id_v = rv.data[0]['id']
-                
-                for art in st.session_state.carrito:
-                    supabase.table("detalles_venta").insert({
-                        "venta_id": id_v, "producto_id": art['id'], 
-                        "cantidad": art['cantidad'], "precio_unitario": art['precio_base'], 
-                        "descuento_aplicado": art['descuento'], "subtotal": art['subtotal']
-                    }).execute()
+                    target_id = None
+                    nombre_cliente = nuevo_cli_nom if c_final_sel == "-- AGREGAR CLIENTE NUEVO --" else c_final_sel
                     
-                    s_act = float(supabase.table("inventario").select("stock_actual").eq("id", art['id']).single().execute().data['stock_actual'])
-                    supabase.table("inventario").update({"stock_actual": s_act - float(art['cantidad'])}).eq("id", art['id']).execute()
-                
-                st.success(f"¡Venta registrada con remisión N° {n_remision}!")
-                st.session_state.carrito = []
-                st.rerun()
+                    if c_final_sel == "-- AGREGAR CLIENTE NUEVO --":
+                        res_new = supabase.table("Clientes").insert({"nombre": nuevo_cli_nom, "telefono": nuevo_cli_tel}).execute()
+                        target_id = res_new.data[0]['id']
+                    else:
+                        target_id = dict_cli[c_final_sel]
+
+                    # Generar PDF
+                    pdf = FPDF()
+                    pdf.add_page()
+                    pdf.set_font("Arial", "B", 16)
+                    pdf.cell(200, 10, txt="NOTA DE VENTA", ln=True, align='C')
+                    pdf.set_font("Arial", "", 12)
+                    pdf.ln(10)
+                    pdf.cell(200, 10, txt=f"Cliente: {nombre_cliente}", ln=True)
+                    pdf.cell(200, 10, txt=f"Fecha: {fec_e} | Remisión: {n_remision}", ln=True)
+                    pdf.cell(200, 10, txt=f"Tipo: {tipo_v}", ln=True)
+                    pdf.ln(5)
+                    pdf.set_font("Arial", "B", 12)
+                    pdf.cell(100, 10, txt="Producto", border=1)
+                    pdf.cell(40, 10, txt="Cant.", border=1)
+                    pdf.cell(40, 10, txt="Subtotal", border=1, ln=True)
+                    pdf.set_font("Arial", "", 12)
+                    for item in st.session_state.carrito:
+                        pdf.cell(100, 10, txt=str(item['nombre']), border=1)
+                        pdf.cell(40, 10, txt=f"{item['cantidad']} {item['unidad']}", border=1)
+                        pdf.cell(40, 10, txt=f"${item['subtotal']:,.2f}", border=1, ln=True)
+                    pdf.ln(5)
+                    pdf.cell(200, 10, txt=f"Flete: ${flete:,.2f} | Maniobra: ${maniobra:,.2f}", ln=True)
+                    if aplicar_iva: pdf.cell(200, 10, txt=f"IVA (16%): ${iva_monto:,.2f}", ln=True)
+                    pdf.set_font("Arial", "B", 14)
+                    pdf.cell(200, 10, txt=f"TOTAL FINAL: ${total_v:,.2f}", ln=True)
+                    pdf.ln(10)
+                    pdf.set_font("Arial", "I", 10)
+                    pdf.multi_cell(0, 10, txt=f"Notas: {notas_venta}")
+                    
+                    pdf_bytes = pdf.output(dest='S').encode('latin-1')
+                    pdf_name = f"{nombre_cliente}_{fec_e}_REM_{n_remision}.pdf".replace(" ", "_")
+                    
+                    url_e = subir_archivo(evid, "evidencias", "ventas") if evid else None
+                    
+                    # Uso de upsert para evitar error de archivo duplicado
+                    supabase.storage.from_("evidencias").upload(
+                        path=f"ventas/{pdf_name}", 
+                        file=pdf_bytes, 
+                        file_options={"content-type": "application/pdf", "upsert": "true"}
+                    )
+                    url_pdf = supabase.storage.from_("evidencias").get_public_url(f"ventas/{pdf_name}")
+
+                    v_ins = {
+                        "cliente_id": target_id, "vendedor_id": st.session_state.usuario_id, "sede_id": sede_id_seleccionada,
+                        "monto_total": total_v, "monto_credito": credito, "evidencia_url": url_e, "pdf_nota_url": url_pdf, 
+                        "fecha_entrega": str(fec_e), "lugar_entrega": lug_e_completo, "tipo_venta": tipo_v, "notas_internas": notas_venta,
+                        "cargos_adicionales": {
+                            "flete": flete, "maniobra": maniobra, "iva_incluido": aplicar_iva, "monto_iva": iva_monto,
+                            "calculo_flete": {"km_ida": km_ida, "gasolina_estimada": gasolina_est, "pago_operador": pago_op}
+                        }, 
+                        "estatus_pago": "pagado" if credito <= 0 else "pendiente", "num_remision": n_remision
+                    }
+                    
+                    rv = supabase.table("ventas").insert(v_ins).execute()
+                    id_v = rv.data[0]['id']
+                    
+                    for art in st.session_state.carrito:
+                        supabase.table("detalles_venta").insert({
+                            "venta_id": id_v, "producto_id": art['id'], "cantidad": art['cantidad'], 
+                            "precio_unitario": art['precio_base'], "descuento_aplicado": art['descuento'], "subtotal": art['subtotal']
+                        }).execute()
+                        s_act = float(supabase.table("inventario").select("stock_actual").eq("id", art['id']).single().execute().data['stock_actual'])
+                        supabase.table("inventario").update({"stock_actual": s_act - float(art['cantidad'])}).eq("id", art['id']).execute()
+                    
+                    st.success(f"¡Venta registrada! PDF: {pdf_name}")
+                    st.session_state.carrito = []
+                    st.rerun()
+
+        with col_btns_2:
+            if st.button("📄 GENERAR COTIZACIÓN", use_container_width=True):
+                if not st.session_state.carrito:
+                    st.error("Agregue materiales para cotizar")
+                else:
+                    nombre_c = nuevo_cli_nom if c_final_sel == "-- AGREGAR CLIENTE NUEVO --" else c_final_sel
+                    pdf_c = FPDF()
+                    pdf_c.add_page()
+                    pdf_c.set_font("Arial", "B", 16)
+                    pdf_c.cell(200, 10, txt="COTIZACIÓN COMERCIAL", ln=True, align='C')
+                    pdf_c.set_font("Arial", "", 12)
+                    pdf_c.ln(10)
+                    pdf_c.cell(200, 10, txt=f"Cliente: {nombre_c}", ln=True)
+                    pdf_c.cell(200, 10, txt=f"CP Destino: {cp}", ln=True)
+                    pdf_c.ln(5)
+                    for item in st.session_state.carrito:
+                        pdf_c.cell(100, 10, txt=f"- {item['nombre']}", border=0)
+                        pdf_c.cell(40, 10, txt=f"{item['cantidad']} {item['unidad']}", border=0)
+                        pdf_c.cell(40, 10, txt=f"${item['subtotal']:,.2f}", border=0, ln=True)
+                    pdf_c.ln(5)
+                    pdf_c.cell(200, 10, txt=f"Flete Estimado: ${flete:,.2f}", ln=True)
+                    pdf_c.set_font("Arial", "B", 14)
+                    pdf_c.cell(200, 10, txt=f"TOTAL ESTIMADO: ${total_v:,.2f}", ln=True)
+                    pdf_c.set_font("Arial", "I", 10)
+                    pdf_c.ln(10)
+                    pdf_c.multi_cell(0, 10, txt="Esta cotización no representa un apartado de material y está sujeta a cambios sin previo aviso.")
+                    
+                    cot_bytes = pdf_c.output(dest='S').encode('latin-1')
+                    st.download_button(
+                        label="⬇️ Descargar Cotización PDF",
+                        data=cot_bytes,
+                        file_name=f"Cotizacion_{nombre_c}.pdf",
+                        mime="application/pdf"
+                    )
                 
     elif menu == "Logística y Envíos":
         st.title("🚚 Control de Entregas - CEDIS Perote")
@@ -1604,32 +1662,28 @@ else:
             opciones_filtro_sede = ["Todas"] + list(dict_sedes.keys())
             sede_sel_nom = st.selectbox("📍 Filtrar por Sede", opciones_filtro_sede)
 
-        # Validamos que el usuario haya seleccionado ambas fechas
         if isinstance(rango, (list, tuple)) and len(rango) == 2:
             f_inicio, f_fin = rango
             f_ini_str = str(f_inicio)
             f_fin_str = str(f_fin)
             
-            # --- CONSULTAS A SUPABASE (ACTUALIZADAS CON RELACIONES) ---
-            # 1. Ventas + Clientes + Sedes
+            # --- CONSULTAS A SUPABASE ---
             q_v = supabase.table("ventas").select("*, Clientes(nombre), sedes(nombre)").gte("fecha_entrega", f_ini_str).lte("fecha_entrega", f_fin_str)
             if sede_sel_nom != "Todas":
                 q_v = q_v.eq("sede_id", dict_sedes[sede_sel_nom])
             res_v = q_v.execute()
             df_v = pd.DataFrame(res_v.data)
 
-            # 2. Gastos + Usuarios
             q_g = supabase.table("gastos").select("*, usuarios(nombre_usuario)").gte("fecha_registro", f_ini_str).lte("fecha_registro", f_fin_str)
             res_g = q_g.execute()
             df_g = pd.DataFrame(res_g.data)
 
-            # 3. Mantenimiento y Combustible (Se mantienen igual)
-            res_m = supabase.table("historial_unidades").select("id, costo_total").gte("fecha_ingreso", f_ini_str).lte("fecha_ingreso", f_fin_str).execute()
+            res_m = supabase.table("historial_unidades").select("*, unidades(nombre_unidad)").gte("fecha_ingreso", f_ini_str).lte("fecha_ingreso", f_fin_str).execute()
             df_m = pd.DataFrame(res_m.data)
-            res_gas = supabase.table("combustible_unidades").select("id, costo_total").gte("fecha", f_ini_str).lte("fecha", f_fin_str).execute()
+            res_gas = supabase.table("combustible_unidades").select("*, unidades(nombre_unidad)").gte("fecha", f_ini_str).lte("fecha", f_fin_str).execute()
             df_gas = pd.DataFrame(res_gas.data)
 
-            # --- PROCESAMIENTO DE DATOS ---
+            # --- PROCESAMIENTO ---
             if not df_v.empty: df_v = df_v.drop_duplicates(subset=['id'])
             if not df_g.empty: df_g = df_g.drop_duplicates(subset=['id'])
             if not df_m.empty: df_m = df_m.drop_duplicates(subset=['id'])
@@ -1638,15 +1692,9 @@ else:
             total_ingresos = pd.to_numeric(df_v['monto_total']).sum() if not df_v.empty else 0.0
             total_ventas_count = len(df_v)
             cartera_pendiente = pd.to_numeric(df_v['monto_credito']).sum() if not df_v.empty else 0.0
-
-            if not df_g.empty:
-                g_generales = pd.to_numeric(df_g[df_g['tipo_gasto'] != 'Combustible']['monto']).sum()
-            else:
-                g_generales = 0.0
-
+            g_generales = pd.to_numeric(df_g[df_g['tipo_gasto'] != 'Combustible']['monto']).sum() if not df_g.empty else 0.0
             g_mantenimiento = pd.to_numeric(df_m['costo_total']).sum() if not df_m.empty else 0.0
             g_gasolina = pd.to_numeric(df_gas['costo_total']).sum() if not df_gas.empty else 0.0
-            
             total_egresos = g_generales + g_mantenimiento + g_gasolina
             utilidad = total_ingresos - total_egresos - cartera_pendiente
 
@@ -1665,18 +1713,13 @@ else:
 
             st.divider()
             
-            # Gráfica de comparación
             if total_ingresos > 0 or total_egresos > 0:
                 st.subheader("📊 Comparativo Ingresos vs Gastos")
-                df_comp = pd.DataFrame({
-                    "Concepto": ["Ventas Totales","Utilidad Neta", "Egresos"],
-                    "Monto": [total_ingresos,utilidad, total_egresos]
-                })
+                df_comp = pd.DataFrame({"Concepto": ["Ventas Totales","Utilidad Neta", "Egresos"], "Monto": [total_ingresos,utilidad, total_egresos]})
                 st.bar_chart(df_comp.set_index("Concepto"))
             
-            # --- NUEVA SECCIÓN: TABLAS DETALLADAS EN UNA FILA ---
             st.divider()
-            st.subheader("📝 Detalle de Operaciones")
+            st.subheader("📝 Detalle de Operaciones Rápidas")
             col_t1, col_t2, col_t3 = st.columns(3)
 
             with col_t1:
@@ -1689,8 +1732,7 @@ else:
                         "Monto": f"${float(v['monto_total']):,.2f}"
                     } for _, v in df_v.iterrows()])
                     st.dataframe(df_v_tabla, use_container_width=True, hide_index=True)
-                else:
-                    st.caption("Sin ventas en el periodo.")
+                else: st.caption("Sin ventas.")
 
             with col_t2:
                 st.write("**💳 Cartera Pendiente**")
@@ -1702,8 +1744,7 @@ else:
                         "Deuda": f"${float(v['monto_credito']):,.2f}"
                     } for _, v in df_p.iterrows()])
                     st.dataframe(df_p_tabla, use_container_width=True, hide_index=True)
-                else:
-                    st.caption("Sin deudas pendientes.")
+                else: st.caption("Sin deudas.")
 
             with col_t3:
                 st.write("**📉 Listado de Gastos**")
@@ -1712,12 +1753,80 @@ else:
                         "Fecha": pd.to_datetime(g['fecha_registro']).strftime('%d/%m/%Y'),
                         "Usuario": g['usuarios']['nombre_usuario'] if g.get('usuarios') else "N/A",
                         "Categoría": g['tipo_gasto'],
-                        "Subcat": g['subcategoria'],
                         "Monto": f"${float(g['monto']):,.2f}"
                     } for _, g in df_g.iterrows()])
                     st.dataframe(df_g_tabla, use_container_width=True, hide_index=True)
-                else:
-                    st.caption("Sin gastos en el periodo.")
+                else: st.caption("Sin gastos.")
+
+            # --- TABLA MAESTRA DE VENTAS ---
+            st.divider()
+            st.subheader("📋 Información Maestra de Ventas")
+            if not df_v.empty:
+                master_data_v = []
+                for _, v in df_v.iterrows():
+                    cargos = v.get('cargos_adicionales', {})
+                    flete_det = cargos.get('calculo_flete', {})
+                    master_data_v.append({
+                        "Remisión": v.get('num_remision', 'S/N'),
+                        "Fecha Venta": pd.to_datetime(v['fecha_venta']).strftime('%d/%m/%Y'),
+                        "Cliente": v['Clientes']['nombre'] if v.get('Clientes') else "N/A",
+                        "Sede": v['sedes']['nombre'] if v.get('sedes') else "N/A",
+                        "Tipo": v.get('tipo_venta', 'Público'),
+                        "Monto Total": float(v['monto_total']),
+                        "Saldo Cred.": float(v['monto_credito']),
+                        "IVA": float(v.get('monto_iva', 0)),
+                        "Flete": float(cargos.get('flete', 0)),
+                        "Maniobra": float(cargos.get('maniobra', 0)),
+                        "Km Ida": flete_det.get('km_ida', 0),
+                        "Gasolina Est.": float(flete_det.get('gasolina_estimada', 0)),
+                        "Estatus Pago": v['estatus_pago'].upper(),
+                        "PDF": v.get('pdf_nota_url', '')
+                    })
+                df_master_v = pd.DataFrame(master_data_v)
+                st.dataframe(df_master_v, column_config={"PDF": st.column_config.LinkColumn("Nota PDF"), "Monto Total": st.column_config.NumberColumn(format="$%.2f"), "Saldo Cred.": st.column_config.NumberColumn(format="$%.2f")}, use_container_width=True, hide_index=True)
+                
+                csv_v = df_master_v.to_csv(index=False).encode('utf-8')
+                st.download_button(label="📥 Descargar Reporte Maestro Ventas (CSV)", data=csv_v, file_name=f"Reporte_Ventas_{f_ini_str}.csv", mime="text/csv")
+            else:
+                st.info("No hay datos de ventas.")
+
+            # --- TABLA MAESTRA DE GASTOS ---
+            st.divider()
+            st.subheader("💸 Información Maestra de Gastos")
+            master_gastos = []
+            if not df_g.empty:
+                for _, g in df_g.iterrows():
+                    master_gastos.append({
+                        "Fecha": pd.to_datetime(g['fecha_registro']).strftime('%d/%m/%Y'),
+                        "Tipo": "General", "Categoría": g['tipo_gasto'], "Subcat": g.get('subcategoria', 'N/A'),
+                        "Descripción": g.get('comentario', 'S/N'), "Monto": float(g['monto']),
+                        "Registró": g['usuarios']['nombre_usuario'] if g.get('usuarios') else "N/A"
+                    })
+            if not df_m.empty:
+                for _, m in df_m.iterrows():
+                    master_gastos.append({
+                        "Fecha": pd.to_datetime(m['fecha_ingreso']).strftime('%d/%m/%Y'),
+                        "Tipo": "Mantenimiento", "Categoría": "Taller", "Subcat": m['unidades']['nombre_unidad'] if m.get('unidades') else "Unidad",
+                        "Descripción": m.get('trabajos_realizados', 'S/N'), "Monto": float(m['costo_total']),
+                        "Registró": "Taller/Flota"
+                    })
+            if not df_gas.empty:
+                for _, gs in df_gas.iterrows():
+                    master_gastos.append({
+                        "Fecha": pd.to_datetime(gs['fecha']).strftime('%d/%m/%Y'),
+                        "Tipo": "Combustible", "Categoría": "Gasolina", "Subcat": gs['unidades']['nombre_unidad'] if gs.get('unidades') else "Unidad",
+                        "Descripción": f"Ticket: {gs.get('ticket_numero','S/N')}", "Monto": float(gs['costo_total']),
+                        "Registró": "Operador"
+                    })
+
+            if master_gastos:
+                df_master_g = pd.DataFrame(master_gastos).sort_values(by="Fecha", ascending=False)
+                st.dataframe(df_master_g, column_config={"Monto": st.column_config.NumberColumn(format="$%.2f")}, use_container_width=True, hide_index=True)
+                
+                csv_g = df_master_g.to_csv(index=False).encode('utf-8')
+                st.download_button(label="📥 Descargar Reporte Maestro Gastos (CSV)", data=csv_g, file_name=f"Reporte_Gastos_{f_ini_str}.csv", mime="text/csv")
+            else:
+                st.info("No hay gastos registrados.")
 
         else:
             st.info("Por favor, selecciona el rango de fechas completo.")
@@ -1987,6 +2096,7 @@ else:
                             st.table(df_h)
                         else:
                             st.info("No hay cambios registrados en el historial.")
+
 
 
 
