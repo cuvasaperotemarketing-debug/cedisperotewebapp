@@ -114,7 +114,7 @@ else:
     # --- CONFIGURACIÓN DE PERMISOS PARA TABS DENTRO DE CADA MENÚ ---
     permisos_tabs = {
         "admin": {
-            "Inventario": ["📋 Stock Actual", "➕ Nuevo Producto", "🕒 Historial", "✏️ Editar Producto"],
+            "Inventario": ["📋 Stock Actual", "➕ Nuevo Producto", "🕒 Historial", "✏️ Editar Producto","🗑️ Eliminar Producto"],
             "Flota y Unidades": ["📋 Inventario", "➕ Alta de Unidad", "🛠️ Mantenimiento", "⛽ Combustible"],
             "Gestión de Gastos": ["➕ Registrar Gasto", "📜 Historial y Auditoría"],
             "Clientes": ["📊 Cartera General", "🔍 Expediente Detallado", "🧾 Ver Recibos"],
@@ -122,7 +122,7 @@ else:
             "Gestión de Sedes": ["➕ Registrar Sede", "🏢 Inventario de Sedes", "📜 Historial de Cambios"]
         },
         "dev": {
-            "Inventario": ["📋 Stock Actual", "➕ Nuevo Producto", "🕒 Historial", "✏️ Editar Producto"],
+            "Inventario": ["📋 Stock Actual", "➕ Nuevo Producto", "🕒 Historial", "✏️ Editar Producto","🗑️ Eliminar Producto"],
             "Flota y Unidades": ["📋 Inventario", "➕ Alta de Unidad", "🛠️ Mantenimiento", "⛽ Combustible"],
             "Gestión de Gastos": ["➕ Registrar Gasto", "📜 Historial y Auditoría"],
             "Clientes": ["📊 Cartera General", "🔍 Expediente Detallado", "🧾 Ver Recibos"],
@@ -280,7 +280,7 @@ else:
         st.title("📦 Almacén CEDIS Perote")
         
         # Definimos todas las tabs disponibles
-        tabs_disponibles = ["📋 Stock Actual", "➕ Nuevo Producto", "🕒 Historial", "✏️ Editar Producto"]
+        tabs_disponibles = ["📋 Stock Actual", "➕ Nuevo Producto", "🕒 Historial", "✏️ Editar Producto", "🗑️ Eliminar Producto"]
         
         # Filtramos según el rol del usuario
         tabs_permitidas = filtrar_tabs_por_rol(rol, "Inventario", tabs_disponibles)
@@ -288,7 +288,6 @@ else:
         if len(tabs_permitidas) == 0:
             st.warning("⚠️ No tienes permisos para ver ninguna sección de Inventario.")
         else:
-            # Creamos las tabs dinámicamente
             tabs = st.tabs(tabs_permitidas)
             
             res_sedes = supabase.table("sedes").select("id, nombre").execute()
@@ -315,27 +314,32 @@ else:
                                 sede_p = p['sedes']['nombre'] if p.get('sedes') else "Sin asignar"
                                 label_granel = " (Granel)" if p.get('es_granel') else ""
                                 with st.expander(f"🛒 {p['nombre_producto']} | {p['stock_actual']} {p.get('unidad_medida', 'unidades')} | {sede_p}{label_granel}"):
-                                    c1, c2 = st.columns([1, 2])
-                                    with c1: 
+                                    col_img, col_info = st.columns([1, 2])
+                                    with col_img: 
                                         if p['foto_url']: st.image(p['foto_url'], width=150)
                                         else: st.info("Sin imagen")
-                                    with c2:
+                                    with col_info:
                                         st.write(f"**Precio Venta:** ${p['precio_unitario']} | **Costo Compra:** ${p.get('precio_compra', 0)}")
-                                        if p.get('es_granel'):
-                                            st.write(f"**Costo Tonelada:** ${p.get('costo_tonelada', 0):,.2f}")
                                         
                                         with st.form(key=f"f_stock_{p['id']}"):
-                                            add = st.number_input(f"Cantidad en {p.get('unidad_medida', 'unidades')}", min_value=0.0, step=0.1 if p.get('es_granel') else 1.0)
+                                            step_val = 0.1 if p.get('es_granel') else 1.0
+                                            add = st.number_input(f"Cantidad a sumar ({p.get('unidad_medida', 'unidades')})", min_value=0.0, step=step_val)
+                                            
                                             if st.form_submit_button("Actualizar Stock"):
                                                 if add > 0:
+                                                    val_to_send = float(add) if p.get('es_granel') else int(add)
                                                     nuevo_total = float(p['stock_actual']) + float(add)
+                                                    
                                                     supabase.table("inventario").update({"stock_actual": nuevo_total}).eq("id", p['id']).execute()
+                                                    
                                                     supabase.table("historial_inventario").insert({
-                                                        "producto_id": p['id'], "usuario_id": st.session_state.usuario_id, 
-                                                        "cantidad_añadida": add, "sede_id": p['sede_id']
+                                                        "producto_id": p['id'], 
+                                                        "usuario_id": st.session_state.usuario_id, 
+                                                        "cantidad_añadida": val_to_send, 
+                                                        "sede_id": p['sede_id']
                                                     }).execute()
-                                                    st.success("Stock actualizado")
-                                                    st.rerun()
+                                                    
+                                                    st.success("Stock actualizado"); st.rerun()
                         else:
                             st.info("No hay productos registrados.")
                     
@@ -362,79 +366,74 @@ else:
                                 if nombre_p:
                                     url_foto = subir_archivo(foto_p, "evidencias", "productos") if foto_p else None
                                     nuevo_prod = {
-                                        "nombre_producto": nombre_p, "sede_id": dict_sedes[sede_p_nom],
-                                        "descripcion": desc_p, "precio_unitario": float(precio_p),
-                                        "precio_compra": float(costo_p), "stock_actual": float(stock_p),
-                                        "foto_url": url_foto, "unidad_medida": unidad_p,
-                                        "es_granel": es_granel, "costo_tonelada": float(costo_ton) if es_granel else 0.0
+                                        "nombre_producto": nombre_p, 
+                                        "sede_id": dict_sedes[sede_p_nom],
+                                        "descripcion": desc_p,
+                                        "precio_unitario": float(precio_p),
+                                        "precio_compra": float(costo_p), 
+                                        "stock_actual": float(stock_p),
+                                        "foto_url": url_foto, 
+                                        "unidad_medida": unidad_p,
+                                        "es_granel": es_granel, 
+                                        "costo_tonelada": float(costo_ton) if es_granel else 0.0
                                     }
                                     supabase.table("inventario").insert(nuevo_prod).execute()
-                                    st.success("Guardado")
-                                    st.rerun()
+                                    st.success("Producto guardado."); st.rerun()
                     
                     elif "Historial" in tab_name:
-                        st.subheader("🕒 Log de Reabastecimientos")
-                        c1, c2 = st.columns(2)
-                        sede_h = c1.selectbox("Filtrar por Sede", ["Todas"] + list(dict_sedes.keys()), key="h_sede")
-                        busqueda_h = c2.text_input("🔍 Buscar producto en historial", "")
-                        
+                        st.subheader("🕒 Log de Movimientos de Inventario")
                         res_h = supabase.table("historial_inventario").select("*, inventario(nombre_producto, sede_id), usuarios(nombre_usuario), sedes(nombre)").order("fecha_movimiento", desc=True).execute()
-                        
                         if res_h.data:
                             datos_tabla = []
                             for h in res_h.data:
-                                nom_sede = h['sedes']['nombre'] if h.get('sedes') else "N/A"
-                                nom_prod = h['inventario']['nombre_producto'] if h.get('inventario') else "N/A"
-                                if (sede_h == "Todas" or nom_sede == sede_h) and (busqueda_h.lower() in nom_prod.lower()):
-                                    datos_tabla.append({
-                                        "Fecha": pd.to_datetime(h['fecha_movimiento']).strftime('%d/%m/%Y %H:%M'),
-                                        "Producto": nom_prod, "Sede": nom_sede,
-                                        "Cantidad": h['cantidad_añadida'], "Encargado": h['usuarios']['nombre_usuario']
-                                    })
+                                nom_prod = h['inventario']['nombre_producto'] if h.get('inventario') else "PRODUCTO ELIMINADO"
+                                tipo_mov = "Entrada" if float(h['cantidad_añadida'] or 0) > 0 else "Baja/Salida"
+                                datos_tabla.append({
+                                    "Fecha": pd.to_datetime(h['fecha_movimiento']).strftime('%d/%m/%Y %H:%M'),
+                                    "Producto": nom_prod, 
+                                    "Tipo": tipo_mov,
+                                    "Cantidad": h['cantidad_añadida'], 
+                                    "Encargado": h['usuarios']['nombre_usuario'] if h.get('usuarios') else "N/A"
+                                })
                             st.dataframe(pd.DataFrame(datos_tabla), use_container_width=True, hide_index=True)
-                    
+
                     elif "Editar Producto" in tab_name:
-                        st.subheader("✏️ Modificar Detalles del Producto")
-                        sede_edit_nom = st.selectbox("1. Seleccionar Sede", list(dict_sedes.keys()), key="edit_sede_sel")
-                        
-                        res_edit = supabase.table("inventario").select("*").eq("sede_id", dict_sedes[sede_edit_nom]).order("nombre_producto").execute()
-                        
+                        st.subheader("✏️ Modificar Detalles")
+                        sede_edit_nom = st.selectbox("Sede", list(dict_sedes.keys()), key="edit_s")
+                        res_edit = supabase.table("inventario").select("*").eq("sede_id", dict_sedes[sede_edit_nom]).execute()
                         if res_edit.data:
-                            dict_edit = {p['nombre_producto']: p for p in res_edit.data}
-                            busqueda_edit = st.text_input("🔍 Buscar producto para editar", "")
-                            opciones_edit = [n for n in dict_edit.keys() if busqueda_edit.lower() in n.lower()]
+                            p_list = {p['nombre_producto']: p for p in res_edit.data}
+                            p_sel = st.selectbox("Producto", list(p_list.keys()))
+                            p_dat = p_list[p_sel]
+                            with st.form("f_edit"):
+                                n_n = st.text_input("Nombre", p_dat['nombre_producto'])
+                                n_p = st.number_input("Precio", value=float(p_dat['precio_unitario']))
+                                if st.form_submit_button("Guardar"):
+                                    supabase.table("inventario").update({"nombre_producto": n_n, "precio_unitario": n_p}).eq("id", p_dat['id']).execute()
+                                    st.success("Ok"); st.rerun()
+
+                    elif "Eliminar Producto" in tab_name:
+                        st.subheader("🗑️ Baja de Producto")
+                        s_del = st.selectbox("Sede", list(dict_sedes.keys()), key="del_s")
+                        res_del = supabase.table("inventario").select("*").eq("sede_id", dict_sedes[s_del]).execute()
+                        if res_del.data:
+                            d_list = {f"{p['nombre_producto']} (Stock: {p['stock_actual']})": p for p in res_del.data}
+                            p_label = st.selectbox("Producto a eliminar", list(d_list.keys()))
+                            p_obj = d_list[p_label]
+                            conf = st.text_input(f"Escriba ELIMINAR para borrar {p_obj['nombre_producto']}")
                             
-                            if opciones_edit:
-                                p_edit_nom = st.selectbox("2. Seleccionar Producto", opciones_edit)
-                                p_data = dict_edit[p_edit_nom]
-                                
-                                with st.form("form_edit_prod"):
-                                    new_nom = st.text_input("Nombre", value=p_data['nombre_producto'])
-                                    new_desc = st.text_area("Descripción", value=p_data.get('descripcion', ''))
+                            if st.button("❌ Confirmar Baja"):
+                                if conf == "ELIMINAR":
+                                    # 1. Desvincular el historial para evitar el error de Foreign Key
+                                    # Esto pone en NULL la relación en el historial pero mantiene el registro del movimiento
+                                    supabase.table("historial_inventario").update({"producto_id": None}).eq("producto_id", p_obj['id']).execute()
                                     
-                                    col_e1, col_e2, col_e3 = st.columns(3)
-                                    new_precio = col_e1.number_input("Precio Venta", value=float(p_data['precio_unitario']))
-                                    new_costo = col_e2.number_input("Precio Compra", value=float(p_data.get('precio_compra', 0)))
-                                    new_unidad = col_e3.selectbox("Unidad", ["Pza", "Kg", "Bulto", "M3", "Tramo"], index=["Pza", "Kg", "Bulto", "M3", "Tramo"].index(p_data.get('unidad_medida', 'Pza')))
+                                    # 2. Ahora sí, eliminar el producto de la tabla inventario
+                                    supabase.table("inventario").delete().eq("id", p_obj['id']).execute()
                                     
-                                    col_e4, col_e5 = st.columns(2)
-                                    new_granel = col_e4.checkbox("Es granel", value=p_data.get('es_granel', False))
-                                    new_costo_ton = col_e5.number_input("Costo Tonelada", value=float(p_data.get('costo_tonelada', 0)))
-                                    
-                                    if st.form_submit_button("Actualizar Información"):
-                                        upd = {
-                                            "nombre_producto": new_nom, "descripcion": new_desc,
-                                            "precio_unitario": new_precio, "precio_compra": new_costo,
-                                            "unidad_medida": new_unidad, "es_granel": new_granel,
-                                            "costo_tonelada": new_costo_ton
-                                        }
-                                        supabase.table("inventario").update(upd).eq("id", p_data['id']).execute()
-                                        st.success("Producto actualizado correctamente")
-                                        st.rerun()
-                            else:
-                                st.warning("No se encontraron productos con ese nombre.")
-                        else:
-                            st.info("No hay productos en esta sede.")
+                                    st.success(f"Producto {p_obj['nombre_producto']} eliminado correctamente."); st.rerun()
+                                else:
+                                    st.error("Debe escribir ELIMINAR para confirmar.")
 
 # --- PÁGINA: NUEVA VENTA (CON DESCUENTOS Y DIRECCIÓN DETALLADA) ---
     elif menu == "Nueva Venta":
@@ -2059,6 +2058,7 @@ else:
                             st.table(df_h)
                         else:
                             st.info("No hay cambios registrados en el historial.")
+
 
 
 
