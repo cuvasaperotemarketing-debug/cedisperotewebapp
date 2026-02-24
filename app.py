@@ -12,9 +12,6 @@ supabase = create_client(url, key)
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="CEDIS Perote - Control de Materiales", layout="wide", page_icon="🏗️")
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="CEDIS Perote - Control de Materiales", layout="wide", page_icon="🏗️")
-
 # --- SISTEMA DE SESIÓN (LOGIN) ---
 if 'rol' not in st.session_state:
     st.session_state.rol = None
@@ -506,7 +503,8 @@ else:
                             "descuento": desc_total_auto,
                             "subtotal": subtotal_item,
                             "sede_id": sede_id_seleccionada,
-                            "unidad": unidad
+                            "unidad": unidad,
+                            "precio_unitario_venta": precio_venta_final
                         })
                         st.toast(f"Añadido: {item_seleccionado['nombre_producto']}")
             else:
@@ -556,24 +554,32 @@ else:
             lug_e_completo = f"{calle}, {colonia}, CP: {cp}, {municipio}, {estado}"
 
             if cp:
-                query_maps = f"{sede_venta_nom} a CP {cp}, {municipio}, {estado}"
-                url_maps = f"https://www.google.com/maps/dir/{sede_venta_nom}/{cp}+{municipio}"
-                st.link_button("🗺️ Abrir Maps para calcular Distancia", url_maps, use_container_width=True)
+                # CORRECCIÓN GOOGLE MAPS: Ruta desde Sede de Origen hasta Destino
+                origen_maps = f"{sede_venta_nom}, Perote, Veracruz"
+                destino_maps = f"{calle}, {colonia}, {cp}, {municipio}, {estado}"
+                url_maps = f"https://www.google.com/maps/dir/{origen_maps.replace(' ', '+')}/{destino_maps.replace(' ', '+')}"
+                st.link_button("🗺️ Calcular Ruta desde Sede de Origen", url_maps, use_container_width=True)
 
             st.markdown("---")
             st.info("⛽ **Calculadora de Flete**")
             km_ida = st.number_input("Distancia de ida (Km)", min_value=0.0, step=0.1)
-            costo_casetas = st.number_input("Casetas Ida y Vuelta ($)", min_value=0.0, step=10.0)
+            costo_casetas = st.number_input("Casetas de Ida ($)", min_value=0.0, step=10.0)
             
             dist_total = (km_ida * 2) + 20
             gasolina_est = (dist_total / 1.7) * 26.60
             pago_op = dist_total * 2.8
             ganancia_fix = 1000.0
             
-            flete_sugerido = gasolina_est + pago_op + costo_casetas + ganancia_fix
+            flete_sugerido = gasolina_est + pago_op + (costo_casetas * 2) + ganancia_fix
             st.caption(f"Flete Sugerido: ${flete_sugerido:,.2f}")
-            st.caption(f"Cantidad A Agregar Por Unidad: ${flete_sugerido/c_sel:,.2f}")
-            st.caption(f"Nuevo Precio Por Unidad: ${(flete_sugerido/c_sel)+precio_lista:,.2f}")
+            
+            # REINTEGRACIÓN DE MÉTRICAS LOGÍSTICAS POR PRODUCTO
+            if st.session_state.carrito:
+                cant_items_total = sum(float(item['cantidad']) for item in st.session_state.carrito)
+                if cant_items_total > 0:
+                    flete_por_unidad = flete_sugerido / cant_items_total
+                    st.caption(f"Subir al precio por producto: :blue[+${flete_por_unidad:,.2f}]")
+                    st.caption(f"Costo logístico total por unidad: :blue[${(flete_por_unidad + precio_lista):,.2f}]")
 
         with c3:
             st.markdown("##### 💰 Totales")
@@ -592,6 +598,112 @@ else:
             notas_venta = st.text_area("Notas de la Venta (para el PDF)")
             evid = st.file_uploader("Evidencia de Pago", type=["jpg", "png", "pdf"])
 
+        def crear_pdf_profesional(titulo, cliente, carrito, total, es_cotizacion=False):
+            pdf = FPDF()
+            pdf.add_page()
+            
+            try:
+                logo_url = supabase.storage.from_("evidencias").get_public_url("logos/logo_cedis.png")
+                pdf.image(logo_url, 10, 8, 33)
+            except: pass
+
+            pdf.set_font("Arial", "B", 10)
+            pdf.set_text_color(150, 0, 0)
+            pdf.cell(0, 5, "CEDIS MOCTEZUMA DE PEROTE S.A. DE C.V.", ln=True, align='R')
+            pdf.set_text_color(0, 0, 0)
+            pdf.set_font("Arial", "", 8)
+            pdf.cell(0, 4, "RFC: CMP130524AF0", ln=True, align='R')
+            pdf.cell(0, 4, "Paulino Fazz Esq. Federico Rendon", ln=True, align='R')
+            pdf.cell(0, 4, "Col. Heroe de Nacozari, Perote, Ver. CP 91273", ln=True, align='R')
+            pdf.cell(0, 4, "cedis_oficinacontable@hotmail.com", ln=True, align='R')
+            
+            pdf.ln(10)
+            pdf.set_fill_color(230, 230, 230)
+            pdf.set_font("Arial", "B", 12)
+            pdf.cell(0, 10, f"{titulo} No. {n_remision if not es_cotizacion else 'PROV'}", border=0, ln=True, align='C', fill=True)
+            
+            pdf.ln(5)
+            pdf.set_font("Arial", "B", 9)
+            pdf.cell(30, 5, "NOMBRE:", 0)
+            pdf.set_font("Arial", "", 9)
+            pdf.cell(0, 5, str(cliente).upper(), 0, ln=True)
+            pdf.set_font("Arial", "B", 9)
+            pdf.cell(30, 5, "DOMICILIO:", 0)
+            pdf.set_font("Arial", "", 9)
+            pdf.cell(0, 5, lug_e_completo.upper() if not es_cotizacion else f"CP: {cp}", 0, ln=True)
+            pdf.set_font("Arial", "B", 9)
+            pdf.cell(30, 5, "FECHA:", 0)
+            pdf.set_font("Arial", "", 9)
+            pdf.cell(0, 5, str(fec_e), 0, ln=True)
+            
+            pdf.ln(5)
+            pdf.set_fill_color(150, 0, 0)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_font("Arial", "B", 9)
+            pdf.cell(20, 8, "CANT", 1, 0, 'C', True)
+            pdf.cell(20, 8, "UNIDAD", 1, 0, 'C', True)
+            pdf.cell(100, 8, "DESCRIPCION", 1, 0, 'C', True)
+            pdf.cell(25, 8, "P. UNIT", 1, 0, 'C', True)
+            pdf.cell(25, 8, "TOTAL", 1, 1, 'C', True)
+            
+            pdf.set_text_color(0, 0, 0)
+            pdf.set_font("Arial", "", 9)
+            
+            for item in carrito:
+                pdf.cell(20, 7, str(item['cantidad']), 1, 0, 'C')
+                pdf.cell(20, 7, item['unidad'], 1, 0, 'C')
+                pdf.cell(100, 7, item['nombre'][:50], 1, 0, 'L')
+                pdf.cell(25, 7, f"${item['precio_unitario_venta']:,.2f}", 1, 0, 'R')
+                pdf.cell(25, 7, f"${item['subtotal']:,.2f}", 1, 1, 'R')
+            
+            if flete > 0:
+                pdf.cell(140, 7, "CARGO POR FLETE Y LOGISTICA", 1, 0, 'L')
+                pdf.cell(25, 7, "-", 1, 0, 'C')
+                pdf.cell(25, 7, f"${flete:,.2f}", 1, 1, 'R')
+            if maniobra > 0:
+                pdf.cell(140, 7, "CARGO POR MANIOBRA DE CARGA/DESCARGA", 1, 0, 'L')
+                pdf.cell(25, 7, "-", 1, 0, 'C')
+                pdf.cell(25, 7, f"${maniobra:,.2f}", 1, 1, 'R')
+
+            pdf.ln(2)
+            pdf.set_font("Arial", "B", 9)
+            pdf.cell(140, 7, "", 0)
+            pdf.cell(25, 7, "SUBTOTAL", 1, 0, 'L')
+            pdf.cell(25, 7, f"${subtotal_base:,.2f}", 1, 1, 'R')
+            if aplicar_iva:
+                pdf.cell(140, 7, "", 0)
+                pdf.cell(25, 7, "IVA 16%", 1, 0, 'L')
+                pdf.cell(25, 7, f"${iva_monto:,.2f}", 1, 1, 'R')
+            
+            pdf.set_fill_color(240, 240, 240)
+            pdf.cell(140, 7, "", 0)
+            pdf.cell(25, 7, "TOTAL", 1, 0, 'L', True)
+            pdf.cell(25, 7, f"${total:,.2f}", 1, 1, 'R', True)
+            
+            # Observaciones y Cuentas
+            pdf.ln(5)
+            pdf.set_font("Arial", "B", 8)
+            pdf.cell(0, 5, "OBSERVACIONES:", ln=True)
+            pdf.set_font("Arial", "", 8)
+            
+            # --- CAMBIO SOLICITADO AQUÍ ---
+            # Determinamos el texto de maniobra según el valor de la variable 'maniobra'
+            texto_maniobra = "Maniobra incluida." if maniobra > 0 else "Libre a bordo."
+            
+            # Construimos el texto completo de las notas
+            texto_notas = f"{notas_venta}\n*{texto_maniobra}\n*Sujeto a disponibilidad.\n*Precio sujeto a cambio sin previo aviso."
+            
+            pdf.multi_cell(0, 4, txt=texto_notas)
+            
+            pdf.ln(3)
+            pdf.set_font("Arial", "B", 8)
+            pdf.cell(0, 5, "DATOS BANCARIOS PARA PAGO:", ln=True)
+            pdf.set_font("Arial", "", 8)
+            pdf.cell(0, 4, "BANAMEX: Cuenta 7005-1569294 | CLABE 002886700515692946", ln=True)
+            pdf.cell(0, 4, "BBVA: Cuenta 0108355010 | CLABE 012840001083550106", ln=True)
+            
+            return pdf
+
         col_btns_1, col_btns_2 = st.columns(2)
         
         with col_btns_1:
@@ -599,52 +711,21 @@ else:
                 if not st.session_state.carrito:
                     st.error("Carrito vacío")
                 elif not calle or not cp:
-                    st.error("Faltan datos de dirección para concretar venta")
+                    st.error("Faltan datos de dirección")
                 else:
-                    target_id = None
                     nombre_cliente = nuevo_cli_nom if c_final_sel == "-- AGREGAR CLIENTE NUEVO --" else c_final_sel
-                    
+                    target_id = None
                     if c_final_sel == "-- AGREGAR CLIENTE NUEVO --":
                         res_new = supabase.table("Clientes").insert({"nombre": nuevo_cli_nom, "telefono": nuevo_cli_tel}).execute()
                         target_id = res_new.data[0]['id']
-                    else:
-                        target_id = dict_cli[c_final_sel]
+                    else: target_id = dict_cli[c_final_sel]
 
-                    # Generar PDF
-                    pdf = FPDF()
-                    pdf.add_page()
-                    pdf.set_font("Arial", "B", 16)
-                    pdf.cell(200, 10, txt="NOTA DE VENTA", ln=True, align='C')
-                    pdf.set_font("Arial", "", 12)
-                    pdf.ln(10)
-                    pdf.cell(200, 10, txt=f"Cliente: {nombre_cliente}", ln=True)
-                    pdf.cell(200, 10, txt=f"Fecha: {fec_e} | Remisión: {n_remision}", ln=True)
-                    pdf.cell(200, 10, txt=f"Tipo: {tipo_v}", ln=True)
-                    pdf.ln(5)
-                    pdf.set_font("Arial", "B", 12)
-                    pdf.cell(100, 10, txt="Producto", border=1)
-                    pdf.cell(40, 10, txt="Cant.", border=1)
-                    pdf.cell(40, 10, txt="Subtotal", border=1, ln=True)
-                    pdf.set_font("Arial", "", 12)
-                    for item in st.session_state.carrito:
-                        pdf.cell(100, 10, txt=str(item['nombre']), border=1)
-                        pdf.cell(40, 10, txt=f"{item['cantidad']} {item['unidad']}", border=1)
-                        pdf.cell(40, 10, txt=f"${item['subtotal']:,.2f}", border=1, ln=True)
-                    pdf.ln(5)
-                    pdf.cell(200, 10, txt=f"Flete: ${flete:,.2f} | Maniobra: ${maniobra:,.2f}", ln=True)
-                    if aplicar_iva: pdf.cell(200, 10, txt=f"IVA (16%): ${iva_monto:,.2f}", ln=True)
-                    pdf.set_font("Arial", "B", 14)
-                    pdf.cell(200, 10, txt=f"TOTAL FINAL: ${total_v:,.2f}", ln=True)
-                    pdf.ln(10)
-                    pdf.set_font("Arial", "I", 10)
-                    pdf.multi_cell(0, 10, txt=f"Notas: {notas_venta}")
-                    
-                    pdf_bytes = pdf.output(dest='S').encode('latin-1')
-                    pdf_name = f"{nombre_cliente}_{fec_e}_REM_{n_remision}.pdf".replace(" ", "_")
+                    pdf_obj = crear_pdf_profesional("NOTA DE VENTA", nombre_cliente, st.session_state.carrito, total_v)
+                    pdf_bytes = pdf_obj.output(dest='S').encode('latin-1')
+                    pdf_name = f"NOTA_{n_remision}_{nombre_cliente.replace(' ', '_')}.pdf"
                     
                     url_e = subir_archivo(evid, "evidencias", "ventas") if evid else None
                     
-                    # Uso de upsert para evitar error de archivo duplicado
                     supabase.storage.from_("evidencias").upload(
                         path=f"ventas/{pdf_name}", 
                         file=pdf_bytes, 
@@ -669,43 +750,23 @@ else:
                     for art in st.session_state.carrito:
                         supabase.table("detalles_venta").insert({
                             "venta_id": id_v, "producto_id": art['id'], "cantidad": art['cantidad'], 
-                            "precio_unitario": art['precio_base'], "descuento_aplicado": art['descuento'], "subtotal": art['subtotal']
+                            "precio_unitario": art['precio_unitario_venta'], "descuento_aplicado": art['descuento'], "subtotal": art['subtotal']
                         }).execute()
                         s_act = float(supabase.table("inventario").select("stock_actual").eq("id", art['id']).single().execute().data['stock_actual'])
                         supabase.table("inventario").update({"stock_actual": s_act - float(art['cantidad'])}).eq("id", art['id']).execute()
                     
-                    st.success(f"¡Venta registrada! PDF: {pdf_name}")
+                    st.success(f"Venta registrada. PDF: {pdf_name}")
                     st.session_state.carrito = []
                     st.rerun()
 
         with col_btns_2:
             if st.button("📄 GENERAR COTIZACIÓN", use_container_width=True):
                 if not st.session_state.carrito:
-                    st.error("Agregue materiales para cotizar")
+                    st.error("Agregue materiales")
                 else:
                     nombre_c = nuevo_cli_nom if c_final_sel == "-- AGREGAR CLIENTE NUEVO --" else c_final_sel
-                    pdf_c = FPDF()
-                    pdf_c.add_page()
-                    pdf_c.set_font("Arial", "B", 16)
-                    pdf_c.cell(200, 10, txt="COTIZACIÓN COMERCIAL", ln=True, align='C')
-                    pdf_c.set_font("Arial", "", 12)
-                    pdf_c.ln(10)
-                    pdf_c.cell(200, 10, txt=f"Cliente: {nombre_c}", ln=True)
-                    pdf_c.cell(200, 10, txt=f"CP Destino: {cp}", ln=True)
-                    pdf_c.ln(5)
-                    for item in st.session_state.carrito:
-                        pdf_c.cell(100, 10, txt=f"- {item['nombre']}", border=0)
-                        pdf_c.cell(40, 10, txt=f"{item['cantidad']} {item['unidad']}", border=0)
-                        pdf_c.cell(40, 10, txt=f"${item['subtotal']:,.2f}", border=0, ln=True)
-                    pdf_c.ln(5)
-                    pdf_c.cell(200, 10, txt=f"Flete Estimado: ${flete:,.2f}", ln=True)
-                    pdf_c.set_font("Arial", "B", 14)
-                    pdf_c.cell(200, 10, txt=f"TOTAL ESTIMADO: ${total_v:,.2f}", ln=True)
-                    pdf_c.set_font("Arial", "I", 10)
-                    pdf_c.ln(10)
-                    pdf_c.multi_cell(0, 10, txt="Esta cotización no representa un apartado de material y está sujeta a cambios sin previo aviso.")
-                    
-                    cot_bytes = pdf_c.output(dest='S').encode('latin-1')
+                    pdf_c_obj = crear_pdf_profesional("COTIZACIÓN COMERCIAL", nombre_c, st.session_state.carrito, total_v, es_cotizacion=True)
+                    cot_bytes = pdf_c_obj.output(dest='S').encode('latin-1')
                     st.download_button(
                         label="⬇️ Descargar Cotización PDF",
                         data=cot_bytes,
@@ -2168,6 +2229,7 @@ else:
                             st.table(df_h)
                         else:
                             st.info("No hay cambios registrados en el historial.")
+
 
 
 
