@@ -12,6 +12,9 @@ supabase = create_client(url, key)
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="CEDIS Perote - Control de Materiales", layout="wide", page_icon="🏗️")
 
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="CEDIS Perote - Control de Materiales", layout="wide", page_icon="🏗️")
+
 # --- SISTEMA DE SESIÓN (LOGIN) ---
 if 'rol' not in st.session_state:
     st.session_state.rol = None
@@ -100,6 +103,9 @@ else:
         "ventas": [
             "Inventario", "Nueva Venta", "Registrar Abono", "Clientes", "Registro de Clientes"
         ],
+        "admin_ventas": [
+            "Inventario", "Nueva Venta", "Registrar Abono", "Clientes", "Registro de Clientes"
+        ],
         "logistica": [
             "Logística y Envíos", "Flota y Unidades", "Inventario"
         ],
@@ -128,6 +134,14 @@ else:
         },
         "ventas": {
             "Inventario": ["📋 Stock Actual"],  # Vendedor solo ve stock actual
+            "Clientes": ["📊 Cartera General", "🧾 Ver Recibos"],  # No ve expediente detallado
+            "Logística y Envíos": [],  # No ve nada de logística
+            "Flota y Unidades": [],  # No ve flota
+            "Gestión de Gastos": [],  # No ve gastos
+            "Gestión de Sedes": []  # No ve sedes
+        },
+        "admin_ventas": {
+            "Inventario": ["📋 Stock Actual","➕ Nuevo Producto","✏️ Editar Producto"],  # Vendedor solo ve stock actual
             "Clientes": ["📊 Cartera General", "🧾 Ver Recibos"],  # No ve expediente detallado
             "Logística y Envíos": [],  # No ve nada de logística
             "Flota y Unidades": [],  # No ve flota
@@ -558,6 +572,8 @@ else:
             
             flete_sugerido = gasolina_est + pago_op + costo_casetas + ganancia_fix
             st.caption(f"Flete Sugerido: ${flete_sugerido:,.2f}")
+            st.caption(f"Cantidad A Agregar Por Unidad: ${flete_sugerido/c_sel:,.2f}")
+            st.caption(f"Nuevo Precio Por Unidad: ${(flete_sugerido/c_sel)+precio_lista:,.2f}")
 
         with c3:
             st.markdown("##### 💰 Totales")
@@ -1711,13 +1727,18 @@ else:
             res_v = q_v.execute()
             df_v = pd.DataFrame(res_v.data)
 
-            q_g = supabase.table("gastos").select("*, usuarios(nombre_usuario)").gte("fecha_registro", f_ini_str).lte("fecha_registro", f_fin_str)
+            # CORRECCIÓN DE AMBIGÜEDAD: Se usan los alias responsable y beneficiario
+            q_g = supabase.table("gastos").select("""
+                *,
+                responsable:usuarios!gastos_usuario_id_fkey(nombre_usuario),
+                beneficiario:usuarios!gastos_beneficiario_id_fkey(nombre_usuario)
+            """).gte("fecha_registro", f_ini_str).lte("fecha_registro", f_fin_str)
             res_g = q_g.execute()
             df_g = pd.DataFrame(res_g.data)
 
-            res_m = supabase.table("historial_unidades").select("*, unidades(nombre_unidad)").gte("fecha_ingreso", f_ini_str).lte("fecha_ingreso", f_fin_str).execute()
+            res_m = supabase.table("historial_unidades").select("*, unidades(*)").gte("fecha_ingreso", f_ini_str).lte("fecha_ingreso", f_fin_str).execute()
             df_m = pd.DataFrame(res_m.data)
-            res_gas = supabase.table("combustible_unidades").select("*, unidades(nombre_unidad)").gte("fecha", f_ini_str).lte("fecha", f_fin_str).execute()
+            res_gas = supabase.table("combustible_unidades").select("*, unidades(*)").gte("fecha", f_ini_str).lte("fecha", f_fin_str).execute()
             df_gas = pd.DataFrame(res_gas.data)
 
             # --- PROCESAMIENTO ---
@@ -1788,7 +1809,7 @@ else:
                 if not df_g.empty:
                     df_g_tabla = pd.DataFrame([{
                         "Fecha": pd.to_datetime(g['fecha_registro']).strftime('%d/%m/%Y'),
-                        "Usuario": g['usuarios']['nombre_usuario'] if g.get('usuarios') else "N/A",
+                        "Responsable": g['responsable']['nombre_usuario'] if g.get('responsable') else "N/A",
                         "Categoría": g['tipo_gasto'],
                         "Monto": f"${float(g['monto']):,.2f}"
                     } for _, g in df_g.iterrows()])
@@ -1833,26 +1854,40 @@ else:
             master_gastos = []
             if not df_g.empty:
                 for _, g in df_g.iterrows():
+                    beneficiario = g['beneficiario']['nombre_usuario'] if g.get('beneficiario') else "N/A"
                     master_gastos.append({
                         "Fecha": pd.to_datetime(g['fecha_registro']).strftime('%d/%m/%Y'),
-                        "Tipo": "General", "Categoría": g['tipo_gasto'], "Subcat": g.get('subcategoria', 'N/A'),
-                        "Descripción": g.get('comentario', 'S/N'), "Monto": float(g['monto']),
-                        "Registró": g['usuarios']['nombre_usuario'] if g.get('usuarios') else "N/A"
+                        "Tipo": "General", "Categoría": g['tipo_gasto'], 
+                        "Subcat": g.get('subcategoria', 'N/A'),
+                        "Descripción": g.get('descripcion', 'S/N'), 
+                        "Beneficiario": beneficiario,
+                        "Monto": float(g['monto']),
+                        "Registró": g['responsable']['nombre_usuario'] if g.get('responsable') else "N/A"
                     })
             if not df_m.empty:
                 for _, m in df_m.iterrows():
+                    u_nombre = m['unidades']['nombre_unidad'] if m.get('unidades') else "Unidad"
+                    u_placas = m['unidades']['placas'] if m.get('unidades') else ""
                     master_gastos.append({
                         "Fecha": pd.to_datetime(m['fecha_ingreso']).strftime('%d/%m/%Y'),
-                        "Tipo": "Mantenimiento", "Categoría": "Taller", "Subcat": m['unidades']['nombre_unidad'] if m.get('unidades') else "Unidad",
-                        "Descripción": m.get('trabajos_realizados', 'S/N'), "Monto": float(m['costo_total']),
+                        "Tipo": "Mantenimiento", "Categoría": "Taller", 
+                        "Subcat": f"{u_nombre} ({u_placas})",
+                        "Descripción": m.get('descripcion_falla', 'S/N'), 
+                        "Beneficiario": m.get('encargado_taller', 'N/A'),
+                        "Monto": float(m['costo_total']),
                         "Registró": "Taller/Flota"
                     })
             if not df_gas.empty:
                 for _, gs in df_gas.iterrows():
+                    u_nombre = gs['unidades']['nombre_unidad'] if gs.get('unidades') else "Unidad"
+                    u_placas = gs['unidades']['placas'] if gs.get('unidades') else ""
                     master_gastos.append({
                         "Fecha": pd.to_datetime(gs['fecha']).strftime('%d/%m/%Y'),
-                        "Tipo": "Combustible", "Categoría": "Gasolina", "Subcat": gs['unidades']['nombre_unidad'] if gs.get('unidades') else "Unidad",
-                        "Descripción": f"Ticket: {gs.get('ticket_numero','S/N')}", "Monto": float(gs['costo_total']),
+                        "Tipo": "Combustible", "Categoría": "Gasolina", 
+                        "Subcat": f"{u_nombre} ({u_placas})",
+                        "Descripción": f"Litros: {gs.get('litros', 0)}", 
+                        "Beneficiario": "Gasolinera",
+                        "Monto": float(gs['costo_total']),
                         "Registró": "Operador"
                     })
 
@@ -2133,6 +2168,7 @@ else:
                             st.table(df_h)
                         else:
                             st.info("No hay cambios registrados en el historial.")
+
 
 
 
