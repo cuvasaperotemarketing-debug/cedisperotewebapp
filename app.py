@@ -1804,15 +1804,11 @@ else:
             if not df_v.empty:
                 # --- PRE-CÁLCULO DE ESTATUS REAL ---
                 def calcular_estatus_real(row):
-                    # El saldo real es DIRECTAMENTE lo que dice la columna monto_credito
                     saldo_restante = float(row.get('monto_credito', 0))
-                    
-                    # Traemos abonos para verificar si hay alguno pendiente de aprobar
                     res_a = supabase.table("abonos").select("estatus_aprobacion").eq("venta_id", row['id']).execute()
                     abonos_data = res_a.data
                     tiene_pendientes = any(a['estatus_aprobacion'] == "pendiente" for a in abonos_data)
                     
-                    # Una venta está PAGADA solo si el saldo es 0 Y no hay abonos pendientes de validar
                     if saldo_restante <= 0 and not tiene_pendientes:
                         return "Pagado"
                     else:
@@ -1822,97 +1818,141 @@ else:
                 df_v['nombre_cliente'] = df_v['Clientes'].apply(lambda x: x['nombre'] if x else "N/A")
                 df_v['nombre_sede'] = df_v['sedes'].apply(lambda x: x['nombre'] if x else "N/A")
 
-                # --- BUSCADOR Y FILTROS ---
-                c1, c2, c3 = st.columns([2, 1, 1])
-                with c1:
-                    busqueda = st.text_input("🔍 Buscar por Cliente o Folio", "").lower()
-                with c2:
-                    filtro_estatus = st.selectbox("Estado de Pago", ["Todos", "Pagado", "Pendiente"])
-                with c3:
-                    opciones_sedes = ["Todas"] + sorted(df_v['nombre_sede'].unique().tolist())
-                    filtro_sede = st.selectbox("Filtrar por Sede", opciones_sedes)
+                # --- CREACIÓN DE TABS PARA SEPARACIÓN DE ACCESOS ---
+                tab_historial, tab_edicion = st.tabs(["📋 Historial y Abonos", "⚙️ Edición y Borrado"])
 
-                df_filtrado = df_v.copy()
-                if busqueda:
-                    df_filtrado = df_filtrado[df_filtrado['nombre_cliente'].str.lower().str.contains(busqueda) | df_filtrado['id'].str.contains(busqueda)]
-                if filtro_estatus != "Todos":
-                    df_filtrado = df_filtrado[df_filtrado['estatus_real'] == filtro_estatus]
-                if filtro_sede != "Todas":
-                    df_filtrado = df_filtrado[df_filtrado['nombre_sede'] == filtro_sede]
+                with tab_historial:
+                    # --- BUSCADOR Y FILTROS ---
+                    c1, c2, c3 = st.columns([2, 1, 1])
+                    with c1:
+                        busqueda = st.text_input("🔍 Buscar por Cliente o Folio", "").lower()
+                    with c2:
+                        filtro_estatus = st.selectbox("Estado de Pago", ["Todos", "Pagado", "Pendiente"])
+                    with c3:
+                        opciones_sedes = ["Todas"] + sorted(df_v['nombre_sede'].unique().tolist())
+                        filtro_sede = st.selectbox("Filtrar por Sede", opciones_sedes)
 
-                st.divider()
+                    df_filtrado = df_v.copy()
+                    if busqueda:
+                        df_filtrado = df_filtrado[df_filtrado['nombre_cliente'].str.lower().str.contains(busqueda) | df_filtrado['id'].astype(str).str.contains(busqueda)]
+                    if filtro_estatus != "Todos":
+                        df_filtrado = df_filtrado[df_filtrado['estatus_real'] == filtro_estatus]
+                    if filtro_sede != "Todas":
+                        df_filtrado = df_filtrado[df_filtrado['nombre_sede'] == filtro_sede]
 
-                # --- RENDERIZADO DE VENTAS FILTRADAS ---
-                for _, v in df_filtrado.iterrows():
-                    monto_total = float(v['monto_total'])
-                    saldo_actual_db = float(v.get('monto_credito', 0))
+                    st.divider()
+
+                    # --- RENDERIZADO DE VENTAS ---
+                    for _, v in df_filtrado.iterrows():
+                        monto_total = float(v['monto_total'])
+                        saldo_actual_db = float(v.get('monto_credito', 0))
+                        res_a = supabase.table("abonos").select("*, usuarios(nombre_usuario)").eq("venta_id", v['id']).order("fecha_abono", desc=True).execute()
+                        total_abonado_real = monto_total - saldo_actual_db
+                        color_status = "green" if v['estatus_real'] == "Pagado" else "red"
+                        label_status = v['estatus_real'].upper()
+
+                        with st.expander(f"🧾 Folio: {v['id'][:8]} | {v['nombre_cliente']} | 📍 {v['nombre_sede']} | :{color_status}[{label_status}]"):
+                            col1, col2 = st.columns([2, 1])
+                            with col1:
+                                st.markdown(f"**📅 Fecha:** {pd.to_datetime(v['fecha_venta']).strftime('%d/%m/%Y %H:%M')}")
+                                st.markdown(f"**🏬 Sede de Despacho:** {v['nombre_sede']}")
+                                st.markdown(f"**📍 Dirección de Entrega:** {v['lugar_entrega'] or 'No especificada'}")
+                                st.markdown(f"**📞 Teléfono:** {v['Clientes']['telefono'] if v['Clientes'] else 'N/A'}")
+                                st.markdown("---")
+                                st.caption("📦 Detalle de Materiales:")
+                                res_det = supabase.table("detalles_venta").select("*, inventario(nombre_producto)").eq("venta_id", v['id']).execute()
+                                if res_det.data:
+                                    df_det = pd.DataFrame(res_det.data)
+                                    df_det['Material'] = df_det['inventario'].apply(lambda x: x['nombre_producto'] if x else "N/A")
+                                    st.dataframe(df_det[['Material', 'cantidad', 'precio_unitario', 'descuento_aplicado', 'subtotal']], use_container_width=True, hide_index=True)
+                                st.markdown("---")
+                                cargos = v.get('cargos_adicionales', {})
+                                ce1, ce2, ce3 = st.columns(3)
+                                with ce1: st.write(f"**Flete:** ${float(cargos.get('flete', 0)):,.2f}")
+                                with ce2: st.write(f"**Maniobra:** ${float(cargos.get('maniobra', 0)):,.2f}")
+                                with ce3: st.write(f"**Total Descuento:** -${df_det['descuento_aplicado'].sum() if res_det.data else 0:,.2f}")
+                            with col2:
+                                st.metric("Total Venta", f"${monto_total:,.2f}")
+                                st.metric("Total Abonado", f"${total_abonado_real:,.2f}")
+                                st.metric("Saldo Pendiente", f"${max(0.0, saldo_actual_db):,.2f}", delta_color="inverse")
+                                if v['evidencia_url']: st.link_button("Ver Comprobante Venta 📄", v['evidencia_url'])
+
+                            if res_a.data:
+                                st.markdown("📋 **Historial de Abonos:**")
+                                for abono in res_a.data:
+                                    c_ab1, c_ab2, c_ab3 = st.columns([3, 2, 2])
+                                    with c_ab1:
+                                        st.write(f"**{pd.to_datetime(abono['fecha_abono']).strftime('%d/%m/%Y %H:%M')}** - ${float(abono['monto_abono']):,.2f}")
+                                        st.caption(f"Vendedor: {abono['usuarios']['nombre_usuario'] if abono['usuarios'] else 'N/A'}")
+                                    with c_ab2:
+                                        status = abono.get('estatus_aprobacion', 'pendiente')
+                                        color = "orange" if status == 'pendiente' else "green" if status == 'aprobado' else "red"
+                                        st.markdown(f":{color}[{status.upper()}]")
+                                    with c_ab3:
+                                        if status == 'pendiente':
+                                            if st.button("Aprobar ✅", key=f"btn_aprobar_{abono['id']}"):
+                                                monto_a_restar = float(abono['monto_abono'])
+                                                supabase.table("abonos").update({"estatus_aprobacion": "aprobado", "aprobado_por": st.session_state.get('nombre_usuario', 'Admin'), "fecha_revision": "now()"}).eq("id", abono['id']).execute()
+                                                nuevo_saldo = max(0.0, saldo_actual_db - monto_a_restar)
+                                                supabase.table("ventas").update({"monto_credito": nuevo_saldo}).eq("id", v['id']).execute()
+                                                st.rerun()
+                                        if abono['evidencia_url']: st.link_button("Ver 🖼️", abono['evidencia_url'])
+                                st.divider()
+
+                with tab_edicion:
+                    st.subheader("🛠️ Herramientas de Edición")
+                    st.caption("Selecciona una venta para corregir información o eliminarla (restaurando stock).")
                     
-                    # Consultamos abonos
-                    res_a = supabase.table("abonos").select("*, usuarios(nombre_usuario)").eq("venta_id", v['id']).order("fecha_abono", desc=True).execute()
+                    # Generamos lista de opciones para el selector de edición
+                    opciones_edit = {f"Folio: {v['id'][:8]} | Cliente: {v['nombre_cliente']} | Remisión: {v.get('num_remision', 'S/N')}": v for _, v in df_v.iterrows()}
+                    v_edit_label = st.selectbox("Seleccionar Venta a Gestionar", ["-- Selecciona --"] + list(opciones_edit.keys()))
                     
-                    # Cálculo visual: Lo abonado es Total - Saldo Actual
-                    total_abonado_real = monto_total - saldo_actual_db
-                    
-                    color_status = "green" if v['estatus_real'] == "Pagado" else "red"
-                    label_status = v['estatus_real'].upper()
-
-                    with st.expander(f"🧾 Folio: {v['id'][:8]} | {v['nombre_cliente']} | 📍 {v['nombre_sede']} | :{color_status}[{label_status}]"):
-                        col1, col2 = st.columns([2, 1])
+                    if v_edit_label != "-- Selecciona --":
+                        v_sel = opciones_edit[v_edit_label]
                         
-                        with col1:
-                            st.markdown(f"**📅 Fecha:** {pd.to_datetime(v['fecha_venta']).strftime('%d/%m/%Y %H:%M')}")
-                            st.markdown(f"**🏬 Sede de Despacho:** {v['nombre_sede']}")
-                            st.markdown(f"**📍 Dirección de Entrega:** {v['lugar_entrega'] or 'No especificada'}")
-                            st.markdown(f"**📞 Teléfono:** {v['Clientes']['telefono'] if v['Clientes'] else 'N/A'}")
-                            
-                            st.markdown("---")
-                            st.caption("📦 Detalle de Materiales:")
-                            res_det = supabase.table("detalles_venta").select("*, inventario(nombre_producto)").eq("venta_id", v['id']).execute()
+                        sub_tab_1, sub_tab_2 = st.tabs(["✏️ Editar Datos", "🗑️ Eliminar Venta"])
+                        
+                        with sub_tab_1:
+                            with st.form(f"f_edit_v_{v_sel['id']}"):
+                                col_e1, col_e2 = st.columns(2)
+                                with col_e1:
+                                    n_rem = st.number_input("N° Remisión", value=int(v_sel.get('num_remision', 0)))
+                                    n_fec = st.date_input("Fecha Entrega", value=pd.to_datetime(v_sel['fecha_entrega']))
+                                with col_e2:
+                                    n_total = st.number_input("Monto Total ($)", value=float(v_sel['monto_total']))
+                                    n_saldo = st.number_input("Saldo Pendiente ($)", value=float(v_sel.get('monto_credito', 0)))
+                                n_lugar = st.text_area("Lugar de Entrega", value=v_sel.get('lugar_entrega', ''))
+                                
+                                if st.form_submit_button("💾 Guardar Cambios"):
+                                    supabase.table("ventas").update({
+                                        "num_remision": n_rem, "fecha_entrega": str(n_fec),
+                                        "monto_total": n_total, "monto_credito": n_saldo, "lugar_entrega": n_lugar
+                                    }).eq("id", v_sel['id']).execute()
+                                    st.success("Cambios guardados con éxito."); st.rerun()
 
-                            if res_det.data:
-                                df_det = pd.DataFrame(res_det.data)
-                                df_det['Material'] = df_det['inventario'].apply(lambda x: x['nombre_producto'] if x else "N/A")
-                                st.dataframe(df_det[['Material', 'cantidad', 'precio_unitario', 'descuento_aplicado', 'subtotal']], use_container_width=True, hide_index=True)
-                            
-                            st.markdown("---")
-                            cargos = v.get('cargos_adicionales', {})
-                            c_extra1, c_extra2, c_extra3 = st.columns(3)
-                            with c_extra1: st.write(f"**Flete:** ${float(cargos.get('flete', 0)):,.2f}")
-                            with c_extra2: st.write(f"**Maniobra:** ${float(cargos.get('maniobra', 0)):,.2f}")
-                            with c_extra3: st.write(f"**Total Descuento:** -${df_det['descuento_aplicado'].sum() if res_det.data else 0:,.2f}")
-
-                        with col2:
-                            st.metric("Total Venta", f"${monto_total:,.2f}")
-                            st.metric("Total Abonado", f"${total_abonado_real:,.2f}")
-                            st.metric("Saldo Pendiente", f"${max(0.0, saldo_actual_db):,.2f}", delta_color="inverse")
-                            
-                            if v['evidencia_url']:
-                                st.link_button("Ver Comprobante Venta 📄", v['evidencia_url'])
-
-                        if res_a.data:
-                            st.markdown("📋 **Historial de Abonos:**")
-                            for abono in res_a.data:
-                                c_ab1, c_ab2, c_ab3 = st.columns([3, 2, 2])
-                                with c_ab1:
-                                    st.write(f"**{pd.to_datetime(abono['fecha_abono']).strftime('%d/%m/%Y %H:%M')}** - ${float(abono['monto_abono']):,.2f}")
-                                    st.caption(f"Vendedor: {abono['usuarios']['nombre_usuario'] if abono['usuarios'] else 'N/A'}")
-                                with c_ab2:
-                                    status = abono.get('estatus_aprobacion', 'pendiente')
-                                    color = "orange" if status == 'pendiente' else "green" if status == 'aprobado' else "red"
-                                    st.markdown(f":{color}[{status.upper()}]")
-                                with c_ab3:
-                                    if status == 'pendiente':
-                                        if st.button("Aprobar ✅", key=f"btn_aprobar_{abono['id']}"):
-                                            monto_a_restar = float(abono['monto_abono'])
-                                            # 1. Aprobar abono
-                                            supabase.table("abonos").update({"estatus_aprobacion": "aprobado", "aprobado_por": st.session_state.get('nombre_usuario', 'Admin'), "fecha_revision": "now()"}).eq("id", abono['id']).execute()
-                                            # 2. Restar del saldo de la venta
-                                            nuevo_saldo = max(0.0, saldo_actual_db - monto_a_restar)
-                                            supabase.table("ventas").update({"monto_credito": nuevo_saldo}).eq("id", v['id']).execute()
-                                            st.rerun()
-                                    if abono['evidencia_url']:
-                                        st.link_button("Ver 🖼️", abono['evidencia_url'])
-                            st.divider()
+                        with sub_tab_2:
+                            st.warning("⚠️ Eliminar una venta devolverá automáticamente las cantidades de los materiales al inventario.")
+                            confirm_id = st.text_input(f"Escriba ELIMINAR para borrar definitivamente:")
+                            if st.button("❌ Procesar Borrado y Restaurar Stock", type="primary"):
+                                if confirm_id == "ELIMINAR":
+                                    # 1. Recuperar detalles para restaurar inventario
+                                    res_det_del = supabase.table("detalles_venta").select("*").eq("venta_id", v_sel['id']).execute()
+                                    if res_det_del.data:
+                                        for det in res_det_del.data:
+                                            # Consultar stock actual del producto
+                                            res_curr_stk = supabase.table("inventario").select("stock_actual").eq("id", det['producto_id']).single().execute()
+                                            if res_curr_stk.data:
+                                                nuevo_stk = float(res_curr_stk.data['stock_actual']) + float(det['cantidad'])
+                                                supabase.table("inventario").update({"stock_actual": nuevo_stk}).eq("id", det['producto_id']).execute()
+                                    
+                                    # 2. Borrar registros relacionados
+                                    supabase.table("detalles_venta").delete().eq("venta_id", v_sel['id']).execute()
+                                    supabase.table("abonos").delete().eq("venta_id", v_sel['id']).execute()
+                                    supabase.table("ventas").delete().eq("id", v_sel['id']).execute()
+                                    
+                                    st.success("Venta eliminada y stock restaurado exitosamente."); st.rerun()
+                                else:
+                                    st.error("Confirmación incorrecta.")
 
             else:
                 st.info("No se encontraron ventas.")
@@ -2058,6 +2098,7 @@ else:
                             st.table(df_h)
                         else:
                             st.info("No hay cambios registrados en el historial.")
+
 
 
 
