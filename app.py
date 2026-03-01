@@ -1316,12 +1316,13 @@ else:
         else:
             tabs = st.tabs(tabs_permitidas)
             
+            # Consultas Base
             res_u = supabase.table("unidades").select("*, usuarios(nombre_usuario)").order("nombre_unidad").execute()
             res_c_total = supabase.table("combustible_unidades").select("costo_total").execute()
             res_users = supabase.table("usuarios").select("id, nombre_usuario").execute()
             
-            df_u = pd.DataFrame(res_u.data)
-            df_c_total = pd.DataFrame(res_c_total.data)
+            df_u = pd.DataFrame(res_u.data) if res_u.data else pd.DataFrame()
+            df_c_total = pd.DataFrame(res_c_total.data) if res_c_total.data else pd.DataFrame()
             dict_users = {u['nombre_usuario']: u['id'] for u in res_users.data}
             
             for i, tab_name in enumerate(tabs_permitidas):
@@ -1342,7 +1343,6 @@ else:
                             st.divider()
                             
                             for _, u in df_u.iterrows():
-                                # CORRECCIÓN COLOR Y EMOJI
                                 est_u = str(u['estado']).lower()
                                 if est_u == "activo": emoji = "🟢"
                                 elif est_u == "en ruta": emoji = "🟠"
@@ -1368,7 +1368,6 @@ else:
                                             resp_vinc = u['usuarios']['nombre_usuario'] if u.get('usuarios') else "No asignado"
                                             st.write(f"**Responsable:** {resp_vinc}")
                                             st.write(f"**KM Actual:** {u.get('kilometraje_actual', 0):,} km")
-                                            # CORRECCIÓN SINTAXIS ESTADO
                                             st.write(f"**Estado:** **{u['estado'].upper()}**")
 
                                     st.divider()
@@ -1385,7 +1384,6 @@ else:
                                         else: st.info("Sin registros de combustible.")
 
                                     with sub_t3:
-                                        # CORRECCIÓN HISTORIAL DE ENVÍOS Y EVIDENCIAS
                                         res_he = supabase.table("envios").select("*, ventas(Clientes(nombre))").eq("unidad_id", u['id']).order("fecha_registro", desc=True).execute()
                                         if res_he.data:
                                             for env_item in res_he.data:
@@ -1399,20 +1397,111 @@ else:
                                                             c_h1.write(f"• {h['estatus_nuevo'].upper()} ({f_f})")
                                                             if h.get('notas'): c_h1.caption(f"💬 {h['notas']}")
                                                             if h.get('evidencia_url'):
-                                                                c_h2.link_button("📸 Ver Foto", h['evidencia_url'], use_container_width=True)
+                                                                c_h2.link_button("📸 Foto", h['evidencia_url'], use_container_width=True)
                                                     else: st.caption("Sin detalles históricos.")
                                         else: st.info("Sin envíos registrados.")
 
                                     with sub_t4:
                                         st.write("**Documentos Oficiales:**")
                                         d_col1, d_col2, d_col3 = st.columns(3)
-                                        for col, label, key in [(d_col1, "Seguro", "url_seguro"), (d_col2, "Tenencia", "url_tenencia"), (d_col3, "Verificación", "url_verificacion")]:
+                                        docs = [("Seguro", "url_seguro", d_col1), ("Tenencia", "url_tenencia", d_col2), ("Verificación", "url_verificacion", d_col3)]
+                                        for label, key, col in docs:
                                             if u.get(key): col.link_button(f"Ver {label} 📄", u[key], use_container_width=True)
                                             else: col.warning(f"Falta {label}")
                         else:
                             st.warning("No hay unidades en el inventario.")
 
-                    # ... (Las tabs de Alta, Mantenimiento y Combustible permanecen igual según tu código proporcionado)
+                    elif "Alta de Unidad" in tab_name:
+                        st.subheader("Registrar Nueva Unidad")
+                        with st.form("f_nueva_unidad", clear_on_submit=True):
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                n_u = st.text_input("Nombre de la Unidad")
+                                mod_u = st.text_input("Modelo")
+                                anio_u = st.number_input("Año", min_value=1990, max_value=2030, value=2025)
+                                p_u = st.text_input("Placas")
+                                s_u = st.text_input("Número de Serie / VIN")
+                                t_u = st.selectbox("Tipo de Vehículo", ["Particular","Tolba","Plana","Tracto Camión","Montacarga"])
+                            with c2:
+                                d_u = st.text_input("Dueño / Propietario")
+                                col_u = st.text_input("Color")
+                                resp_nom_u = st.selectbox("Responsable Fijo", list(dict_users.keys()))
+                                km_u = st.number_input("Kilometraje Inicial", min_value=0)
+                                foto_u = st.file_uploader("Fotografía de la Unidad", type=["jpg", "png"])
+                            
+                            st.markdown("---")
+                            cd1, cd2, cd3 = st.columns(3)
+                            f_seguro = cd1.file_uploader("Póliza de Seguro", type=["pdf", "jpg", "png"])
+                            f_tenencia = cd2.file_uploader("Comprobante Tenencia", type=["pdf", "jpg", "png"])
+                            f_verif = cd3.file_uploader("Verificación", type=["pdf", "jpg", "png"])
+                            
+                            if st.form_submit_button("💾 Guardar Nueva Unidad"):
+                                if n_u and p_u:
+                                    url_foto = subir_archivo(foto_u, "evidencias", "unidades") if foto_u else None
+                                    url_s = subir_archivo(f_seguro, "evidencias", "documentos") if f_seguro else None
+                                    url_t = subir_archivo(f_tenencia, "evidencias", "documentos") if f_tenencia else None
+                                    url_v = subir_archivo(f_verif, "evidencias", "documentos") if f_verif else None
+                                    
+                                    data_u = {
+                                        "nombre_unidad": n_u, "modelo": mod_u, "anio": anio_u, "placas": p_u, "serie": s_u, 
+                                        "tipo": t_u, "color": col_u, "responsable_id": dict_users[resp_nom_u], 
+                                        "kilometraje_actual": km_u, "dueno": d_u, "foto_unidad_url": url_foto, 
+                                        "estado": "activo", "url_seguro": url_s, "url_tenencia": url_t, "url_verificacion": url_v
+                                    }
+                                    supabase.table("unidades").insert(data_u).execute()
+                                    st.success(f"✅ Unidad {n_u} registrada."); st.rerun()
+
+                    elif "Mantenimiento" in tab_name:
+                        st.subheader("🛠️ Control de Taller")
+                        if not df_u.empty:
+                            u_list_m = {f"{u['nombre_unidad']} ({u['placas']})": u for _, u in df_u.iterrows()}
+                            u_sel_m = st.selectbox("Seleccionar Unidad", list(u_list_m.keys()))
+                            u_info = u_list_m[u_sel_m]
+                            
+                            col_m1, col_m2 = st.columns(2)
+                            with col_m1:
+                                st.markdown("### 📥 Entrada")
+                                with st.form("f_entrada_taller"):
+                                    f_in = st.date_input("Fecha Ingreso")
+                                    taller = st.text_input("Taller")
+                                    falla = st.text_area("Falla/Motivo")
+                                    if st.form_submit_button("🔨 Enviar a Taller"):
+                                        supabase.table("unidades").update({"estado": "en reparación", "nota_estado": falla, "ultima_entrada_taller": str(f_in), "encargado_reparacion": taller}).eq("id", u_info['id']).execute()
+                                        st.rerun()
+                            with col_m2:
+                                st.markdown("### 📤 Salida")
+                                if u_info['estado'].lower() == "en reparación":
+                                    with st.form("f_salida_taller"):
+                                        f_out = st.date_input("Fecha Salida")
+                                        costo = st.number_input("Costo Reparación", min_value=0.0)
+                                        evid_r = st.file_uploader("Factura/Ticket", type=["jpg", "png", "pdf"])
+                                        if st.form_submit_button("✅ Finalizar"):
+                                            url_r = subir_archivo(evid_r, "evidencias", "reparaciones") if evid_r else None
+                                            supabase.table("unidades").update({"estado": "activo", "ultimo_costo_reparacion": costo}).eq("id", u_info['id']).execute()
+                                            supabase.table("historial_unidades").insert({"unidad_id": u_info['id'], "tipo_movimiento": "Reparación", "fecha_ingreso": u_info['ultima_entrada_taller'], "fecha_salida": str(f_out), "costo_total": costo, "descripcion_falla": u_info['nota_estado'], "encargado_taller": u_info['encargado_reparacion'], "evidencia_url": url_r}).execute()
+                                            st.rerun()
+                                else: st.info("Unidad activa.")
+
+                    elif "Combustible" in tab_name:
+                        st.subheader("⛽ Carga de Gasolina")
+                        if not df_u.empty:
+                            u_c_dict = {f"{u['nombre_unidad']} ({u['placas']})": u for _, u in df_u.iterrows()}
+                            u_c_sel = st.selectbox("Seleccionar Unidad", list(u_c_dict.keys()), key="gas_sel")
+                            u_info = u_c_dict[u_c_sel]
+                            with st.form("f_gas"):
+                                cg1, cg2 = st.columns(2)
+                                with cg1:
+                                    f_g = st.date_input("Fecha")
+                                    km_g = st.number_input("Kilometraje Actual", value=int(u_info.get('kilometraje_actual', 0)))
+                                with cg2:
+                                    lits = st.number_input("Litros", min_value=1.0)
+                                    pago = st.number_input("Costo Total", min_value=1.0)
+                                    tick = st.file_uploader("Ticket", type=["jpg", "png"])
+                                if st.form_submit_button("Registrar Carga"):
+                                    url_t = subir_archivo(tick, "evidencias", "combustible") if tick else None
+                                    supabase.table("combustible_unidades").insert({"unidad_id": u_info['id'], "fecha": str(f_g), "kilometraje_registro": int(km_g), "litros": float(lits), "costo_total": float(pago), "ticket_url": url_t, "vendedor_id": st.session_state.usuario_id}).execute()
+                                    supabase.table("unidades").update({"kilometraje_actual": km_g}).eq("id", u_info['id']).execute()
+                                    st.success("Carga registrada."); st.rerun()
 
     
                     
@@ -2098,6 +2187,7 @@ else:
                             st.table(df_h)
                         else:
                             st.info("No hay cambios registrados en el historial.")
+
 
 
 
